@@ -1,4 +1,4 @@
-name: Build Windows EXE & macOS DMG
+name: Build Windows EXE & macOS Universal DMGs
 
 on:
   push:
@@ -10,7 +10,6 @@ permissions:
   contents: write
 
 env:
-  # Node.js 20 の非推奨警告を解消
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -43,7 +42,6 @@ jobs:
           mkdir dist\package_win\fonts
           copy dist\InstantDeliveryStudio.exe dist\package_win\
 
-      # upload-artifactが自動でZIP化するため、フォルダを直接指定して二重ZIPを防ぐ
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -52,10 +50,10 @@ jobs:
           retention-days: 30
 
   # ==========================================
-  # 2. macOS (.dmg) ビルドジョブ
+  # 2. macOS (Apple Silicon: M1/M2/M3/M4) ビルド
   # ==========================================
-  build-macos:
-    runs-on: macos-14
+  build-macos-arm64:
+    runs-on: macos-15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,28 +68,79 @@ jobs:
           python3 -m pip install --upgrade pip
           pip3 install Pillow piexif customtkinter tkinterdnd2 pyinstaller
 
-      - name: Build macOS .app Bundle with PyInstaller
+      - name: Build macOS .app (Apple Silicon)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "12.0"
         run: |
-          pyinstaller --noconsole --windowed --name "InstantDeliveryStudio" --collect-all customtkinter --collect-all tkinterdnd2 app.py
+          pyinstaller --noconsole --onefile --windowed \
+            --name "InstantDeliveryStudio" \
+            --osx-bundle-identifier "com.pogo.instantdeliverystudio" \
+            --codesign-identity - \
+            --collect-all customtkinter \
+            --collect-all tkinterdnd2 \
+            app.py
 
-      - name: Code Sign & Create macOS .dmg Installer
+      - name: Create macOS .dmg (Apple Silicon)
         run: |
-          # シンボリックリンクを壊さないよう ditto で複製
           mkdir -p dist/dmg_root/fonts
           ditto dist/InstantDeliveryStudio.app dist/dmg_root/InstantDeliveryStudio.app
-
-          # Apple Silicon対応のアドホック署名
           codesign --force --deep --sign - dist/dmg_root/InstantDeliveryStudio.app
-
-          # Mac標準の hdiutil で解凍エラーが起きない .dmg ファイルを生成
           hdiutil create -volname "InstantDeliveryStudio" \
             -srcfolder dist/dmg_root \
             -ov -format UDZO \
-            dist/InstantDeliveryStudio-macOS.dmg
+            dist/InstantDeliveryStudio-macOS-AppleSilicon.dmg
 
-      - name: Upload macOS Artifact (.dmg)
+      - name: Upload macOS Apple Silicon Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: InstantDeliveryStudio-macOS-DMG
-          path: dist/InstantDeliveryStudio-macOS.dmg
+          name: InstantDeliveryStudio-macOS-AppleSilicon
+          path: dist/InstantDeliveryStudio-macOS-AppleSilicon.dmg
+          retention-days: 30
+
+  # ==========================================
+  # 3. macOS (Intel Mac & Rosetta 2 互換) ビルド
+  # ==========================================
+  build-macos-intel:
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install Pillow piexif customtkinter tkinterdnd2 pyinstaller
+
+      - name: Build macOS .app (Intel x86_64)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          pyinstaller --noconsole --onefile --windowed \
+            --name "InstantDeliveryStudio" \
+            --osx-bundle-identifier "com.pogo.instantdeliverystudio" \
+            --codesign-identity - \
+            --collect-all customtkinter \
+            --collect-all tkinterdnd2 \
+            app.py
+
+      - name: Create macOS .dmg (Intel x86_64)
+        run: |
+          mkdir -p dist/dmg_root/fonts
+          ditto dist/InstantDeliveryStudio.app dist/dmg_root/InstantDeliveryStudio.app
+          codesign --force --deep --sign - dist/dmg_root/InstantDeliveryStudio.app
+          hdiutil create -volname "InstantDeliveryStudio" \
+            -srcfolder dist/dmg_root \
+            -ov -format UDZO \
+            dist/InstantDeliveryStudio-macOS-Intel.dmg
+
+      - name: Upload macOS Intel Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InstantDeliveryStudio-macOS-Intel
+          path: dist/InstantDeliveryStudio-macOS-Intel.dmg
           retention-days: 30
