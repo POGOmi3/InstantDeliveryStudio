@@ -5,6 +5,7 @@ import time
 import zipfile
 import platform
 import subprocess
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -25,50 +26,82 @@ except ImportError:
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
+# ==========================================
+# OS判別 & .exe / .app (onedir・読み取り専用DMG対応) パス解決
+# ==========================================
+IS_WINDOWS = (platform.system() == "Windows")
 IS_MAC = (platform.system() == "Darwin")
-IS_WIN = (platform.system() == "Windows")
 
-# .exe (Windows) および .app (Mac) 実行時でも本体と同じ階層を参照する
-if getattr(sys, "frozen", False):
-    exe_dir = Path(sys.executable).resolve().parent
-    if IS_MAC and exe_dir.name == "MacOS" and exe_dir.parent.name == "Contents":
-        BASE_APP_DIR = exe_dir.parent.parent.parent
+
+def _resolve_storage_dirs():
+    """
+    実行ファイル横のディレクトリを特定し、書き込み不可環境（読み取り専用DMG内や保護フォルダ）で
+    起動された場合はOS標準のユーザーデータ領域へ安全にフォールバックする。
+    """
+    if getattr(sys, "frozen", False):
+        exe_path = Path(sys.executable).resolve()
+        bundle_parent = exe_path.parent
+        if IS_MAC:
+            for parent in exe_path.parents:
+                if parent.suffix == ".app":
+                    bundle_parent = parent.parent
+                    break
     else:
-        BASE_APP_DIR = exe_dir
-else:
-    BASE_APP_DIR = Path(__file__).resolve().parent
+        bundle_parent = Path(__file__).resolve().parent
 
-LOCAL_FONTS_DIR = BASE_APP_DIR / "fonts"
-LOCAL_FONTS_DIR.mkdir(exist_ok=True)
+    bundled_fonts = bundle_parent / "fonts"
+
+    # 実行ファイル横に書き込み可能かテスト
+    writable_base = None
+    probe_file = bundle_parent / ".write_probe_tmp"
+    try:
+        if os.access(str(bundle_parent), os.W_OK):
+            with open(probe_file, "w", encoding="utf-8") as f:
+                f.write("")
+            probe_file.unlink(missing_ok=True)
+            (bundle_parent / "fonts").mkdir(exist_ok=True)
+            writable_base = bundle_parent
+    except OSError:
+        try:
+            probe_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # 読み取り専用環境（DMG直起動や/Applications配下など）の場合はユーザー領域を使用
+    if writable_base is None:
+        if IS_MAC:
+            writable_base = Path.home() / "Library" / "Application Support" / "InstantDeliveryStudio"
+        elif IS_WINDOWS:
+            local_app = os.environ.get("LOCALAPPDATA")
+            base_root = Path(local_app) if local_app else (Path.home() / "AppData" / "Local")
+            writable_base = base_root / "InstantDeliveryStudio"
+        else:
+            writable_base = Path.home() / ".config" / "InstantDeliveryStudio"
+
+        try:
+            (writable_base / "fonts").mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+
+    return bundle_parent, bundled_fonts, writable_base / "fonts", writable_base / "autosave_config.json"
+
+
+BASE_APP_DIR, BUNDLED_FONTS_DIR, LOCAL_FONTS_DIR, AUTOSAVE_FILE = _resolve_storage_dirs()
 
 _SYSTEM_FONTS_CACHE = None
-
-
-def open_folder(path_str: str):
-    """Windows / Mac / Linux すべてでフォルダを標準ファイラーで開く"""
-    try:
-        if IS_WIN:
-            os.startfile(path_str)
-        elif IS_MAC:
-            subprocess.run(["open", path_str], check=False)
-        else:
-            subprocess.run(["xdg-open", path_str], check=False)
-    except Exception:
-        pass
-
 
 # ==========================================
 # Sleek Minimal カラーパレット & フォント定義
 # ==========================================
-FONT_FAMILY = "Hiragino Sans" if IS_MAC else "Yu Gothic UI"
-COLOR_BG = "#0e0f12"          # アプリ最背面（ディープブラック）
+FONT_FAMILY = "Yu Gothic UI" if IS_WINDOWS else ("Hiragino Sans" if IS_MAC else "Sans")
+COLOR_BG = "#0e0f12"          # アプリ最背面
 COLOR_SURFACE = "#16181d"     # パネル背景
 COLOR_ELEVATED = "#1e2028"    # カード・入力セクション背景
 COLOR_ACTIVE_ROW = "#252a3a"  # 選択中の行背景
-COLOR_BORDER = "#282b36"      # 1px 繊細ボーダー
+COLOR_BORDER = "#282b36"      # 1px ボーダー
 COLOR_INPUT = "#262934"       # プルダウン・入力欄背景
 COLOR_INPUT_HOVER = "#323644" # ホバー時
-COLOR_ACCENT = "#3b82f6"      # フォーカス・選択アクセント
+COLOR_ACCENT = "#3b82f6"      # 選択アクセント
 COLOR_PRIMARY_BTN = "#2563eb" # メインアクションボタン
 COLOR_PRIMARY_HOVER = "#1d4ed8"
 COLOR_TEXT_MAIN = "#f4f4f5"   # メイン文字
@@ -80,6 +113,22 @@ def ui_font(size: int = 12, weight: str = "normal"):
     return ctk.CTkFont(family=FONT_FAMILY, size=size, weight=weight)
 
 
+def open_folder(path_str: str):
+    """Windows / Mac / Linux すべてで指定フォルダを開くクロスプラットフォーム関数"""
+    try:
+        target = Path(path_str)
+        if not target.exists():
+            target.mkdir(parents=True, exist_ok=True)
+        if IS_WINDOWS:
+            os.startfile(str(target))
+        elif IS_MAC:
+            subprocess.run(["open", str(target)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(target)], check=False)
+    except Exception:
+        pass
+
+
 # ==========================================
 # PC内フォントスキャン & 専用フォントピッカー
 # ==========================================
@@ -89,37 +138,33 @@ def scan_pc_fonts(force_refresh: bool = False):
     if _SYSTEM_FONTS_CACHE is not None and not force_refresh:
         return _SYSTEM_FONTS_CACHE
 
-    font_dirs = [LOCAL_FONTS_DIR]
+    font_dirs = []
+    for local_d in (LOCAL_FONTS_DIR, BUNDLED_FONTS_DIR):
+        if local_d.exists() and local_d not in font_dirs:
+            font_dirs.append(local_d)
 
-    if IS_WIN:
+    if IS_WINDOWS:
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         if local_appdata:
             user_font_dir = Path(local_appdata) / "Microsoft" / "Windows" / "Fonts"
             if user_font_dir.exists():
                 font_dirs.append(user_font_dir)
-
         win_font_dir = Path("C:/Windows/Fonts")
         if win_font_dir.exists():
             font_dirs.append(win_font_dir)
-
     elif IS_MAC:
-        for mac_dir in [
+        for mac_p in [
             Path.home() / "Library" / "Fonts",
             Path("/Library/Fonts"),
             Path("/System/Library/Fonts"),
             Path("/System/Library/Fonts/Supplemental"),
         ]:
-            if mac_dir.exists():
-                font_dirs.append(mac_dir)
-
+            if mac_p.exists():
+                font_dirs.append(mac_p)
     else:
-        for linux_dir in [
-            Path.home() / ".local" / "share" / "fonts",
-            Path("/usr/share/fonts"),
-            Path("/usr/local/share/fonts"),
-        ]:
-            if linux_dir.exists():
-                font_dirs.append(linux_dir)
+        for lin_p in [Path.home() / ".fonts", Path("/usr/share/fonts")]:
+            if lin_p.exists():
+                font_dirs.append(lin_p)
 
     valid_exts = {".ttf", ".otf", ".ttc"}
     results = []
@@ -139,7 +184,8 @@ def scan_pc_fonts(force_refresh: bool = False):
                         font_obj = ImageFont.truetype(p_str, 16)
                         family, style = font_obj.getname()
                         if family:
-                            tag = " [Local]" if d == LOCAL_FONTS_DIR else ""
+                            is_local = (d in (LOCAL_FONTS_DIR, BUNDLED_FONTS_DIR))
+                            tag = " [Local]" if is_local else ""
                             display_name = f"{family} ({style})  -  {f.name}{tag}"
                     except Exception:
                         pass
@@ -206,7 +252,7 @@ class FontPickerDialog(ctk.CTkToplevel):
         self.listbox = tk.Listbox(
             list_frame, yscrollcommand=scrollbar.set,
             bg=COLOR_SURFACE, fg=COLOR_TEXT_MAIN, selectbackground=COLOR_ACCENT, selectforeground="#ffffff",
-            font=(FONT_FAMILY, 11), borderwidth=0, highlightthickness=0
+            font=(FONT_FAMILY, 10), borderwidth=0, highlightthickness=0
         )
         self.listbox.pack(side="left", fill="both", expand=True, padx=6, pady=6)
         scrollbar.config(command=self.listbox.yview)
@@ -270,8 +316,7 @@ class FontPickerDialog(ctk.CTkToplevel):
         self.preview_img_label.image = ctk_img
 
     def _browse_direct_file(self):
-        # Macでも選択できるようスペース区切りで拡張子を指定
-        p = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf *.otf *.ttc *.TTF *.OTF *.TTC"), ("All", "*.*")])
+        p = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf;*.otf;*.ttc"), ("All", "*.*")])
         if p:
             self.selected_path = p
             self._confirm()
@@ -377,17 +422,24 @@ class SliderEntryWidget(ctk.CTkFrame):
 
 def load_font(font_path: str, size: int):
     candidates = []
-    if font_path and os.path.exists(font_path):
-        candidates.append(font_path)
+    if font_path:
+        if os.path.exists(font_path):
+            candidates.append(font_path)
+        else:
+            fname = Path(font_path).name
+            for font_dir in (LOCAL_FONTS_DIR, BUNDLED_FONTS_DIR):
+                cand = font_dir / fname
+                if cand.exists():
+                    candidates.append(str(cand))
+
     candidates.extend([
-        # Windows 標準フォント
+        # Windows標準フォント
         "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/YuGothM.ttc",
         "C:/Windows/Fonts/meiryo.ttc",
-        # macOS 標準フォント
+        # Mac標準フォント
         "/System/Library/Fonts/Helvetica.ttc",
-        "/System/Library/Fonts/Avenir.ttc",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -435,6 +487,14 @@ def create_sample_dummy_image(is_portrait: bool = False):
     return img, sample_meta
 
 
+def _safe_decode_exif_str(raw_val, default: str = "") -> str:
+    if isinstance(raw_val, bytes):
+        return raw_val.decode("utf-8", "ignore").strip("\x00 ")
+    if isinstance(raw_val, str):
+        return raw_val.strip("\x00 ")
+    return default
+
+
 def extract_exif_metadata(img_path: str):
     meta = {
         "datetime": None, "subsec": "000", "camera": "", "lens": "",
@@ -446,19 +506,19 @@ def extract_exif_metadata(img_path: str):
         zeroth = exif_dict.get("0th", {})
         exif = exif_dict.get("Exif", {})
 
-        make = zeroth.get(piexif.ImageIFD.Make, b"").decode("utf-8", "ignore").strip("\x00 ")
-        model = zeroth.get(piexif.ImageIFD.Model, b"").decode("utf-8", "ignore").strip("\x00 ")
+        make = _safe_decode_exif_str(zeroth.get(piexif.ImageIFD.Make))
+        model = _safe_decode_exif_str(zeroth.get(piexif.ImageIFD.Model))
         if model:
             if make and not model.upper().startswith(make.split()[0].upper()):
                 meta["camera"] = f"{make.split()[0]} {model}"
             else:
                 meta["camera"] = model
 
-        meta["lens"] = exif.get(piexif.ExifIFD.LensModel, b"").decode("utf-8", "ignore").strip("\x00 ")
+        meta["lens"] = _safe_decode_exif_str(exif.get(piexif.ExifIFD.LensModel))
 
-        dt_bytes = exif.get(piexif.ExifIFD.DateTimeOriginal) or zeroth.get(piexif.ImageIFD.DateTime)
-        if dt_bytes:
-            dt_str = dt_bytes.decode("utf-8", "ignore").strip("\x00 ")
+        dt_raw = exif.get(piexif.ExifIFD.DateTimeOriginal) or zeroth.get(piexif.ImageIFD.DateTime)
+        dt_str = _safe_decode_exif_str(dt_raw)
+        if dt_str:
             try:
                 dt_obj = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
                 meta["datetime"] = dt_obj
@@ -466,33 +526,36 @@ def extract_exif_metadata(img_path: str):
             except ValueError:
                 pass
 
-        subsec = exif.get(piexif.ExifIFD.SubSecTimeOriginal, b"000").decode("utf-8", "ignore").strip("\x00 ")
+        subsec = _safe_decode_exif_str(exif.get(piexif.ExifIFD.SubSecTimeOriginal), "000")
         meta["subsec"] = subsec if subsec.isdigit() else "000"
 
         fl = exif.get(piexif.ExifIFD.FocalLength)
-        if isinstance(fl, tuple) and fl[1] != 0:
+        if isinstance(fl, tuple) and len(fl) == 2 and fl[1] != 0:
             val = fl[0] / fl[1]
             meta["focal"] = f"{int(val)}mm" if val.is_integer() else f"{val:.1f}mm"
 
         fn = exif.get(piexif.ExifIFD.FNumber)
-        if isinstance(fn, tuple) and fn[1] != 0:
+        if isinstance(fn, tuple) and len(fn) == 2 and fn[1] != 0:
             val = fn[0] / fn[1]
             meta["fnumber"] = f"f/{val:.1f}".rstrip("0").rstrip(".") if val >= 10 else f"f/{val:.1f}"
 
         exp = exif.get(piexif.ExifIFD.ExposureTime)
-        if isinstance(exp, tuple) and exp[1] != 0 and exp[0] != 0:
+        if isinstance(exp, tuple) and len(exp) == 2 and exp[1] != 0 and exp[0] != 0:
             val = exp[0] / exp[1]
             meta["shutter"] = f"1/{int(round(1.0 / val))}s" if val < 1.0 else f"{val:.1f}".rstrip("0").rstrip(".") + "s"
 
         iso = exif.get(piexif.ExifIFD.ISOSpeedRatings)
-        if iso:
+        if iso is not None:
             meta["iso"] = f"ISO {iso}"
     except Exception:
         pass
 
     if meta["datetime"] is None:
-        mtime = os.path.getmtime(img_path)
-        meta["datetime"] = datetime.fromtimestamp(mtime)
+        try:
+            mtime = os.path.getmtime(img_path)
+            meta["datetime"] = datetime.fromtimestamp(mtime)
+        except OSError:
+            meta["datetime"] = datetime.now()
         meta["date_str"] = meta["datetime"].strftime("%Y.%m.%d")
 
     return meta
@@ -843,49 +906,54 @@ def make_simulated_opposite_orientation(img: Image.Image) -> Image.Image:
 
 
 def build_filtered_exif_bytes(meta: dict, exif_mode: str, corrected_dt: datetime, copyright_str: str):
+    """全モードを例外保護し、不正タグ混入時でも書き出しスレッドを止めない安全なEXIF再構築"""
     if exif_mode == "④全削除":
         return None
 
-    dt_str = corrected_dt.strftime("%Y:%m:%d %H:%M:%S").encode("utf-8")
-    raw = meta.get("raw_exif")
-
-    if exif_mode == "①納品最適(日時のみ)" or not raw:
-        zeroth = {piexif.ImageIFD.Orientation: 1, piexif.ImageIFD.DateTime: dt_str}
-        exif_ifd = {
-            piexif.ExifIFD.DateTimeOriginal: dt_str,
-            piexif.ExifIFD.DateTimeDigitized: dt_str,
-            piexif.ExifIFD.SubSecTimeOriginal: meta.get("subsec", "000").encode("utf-8")
-        }
-        if copyright_str:
-            zeroth[piexif.ImageIFD.Copyright] = copyright_str.encode("utf-8")
-            zeroth[piexif.ImageIFD.Artist] = copyright_str.encode("utf-8")
-        return piexif.dump({"0th": zeroth, "Exif": exif_ifd, "GPS": {}, "1st": {}, "thumbnail": None})
-
-    if exif_mode == "②カメラ維持":
-        orig_0th = raw.get("0th", {})
-        orig_exif = raw.get("Exif", {})
-        zeroth = {piexif.ImageIFD.Orientation: 1, piexif.ImageIFD.DateTime: dt_str}
-        for tag in [piexif.ImageIFD.Make, piexif.ImageIFD.Model]:
-            if tag in orig_0th:
-                zeroth[tag] = orig_0th[tag]
-        if copyright_str:
-            zeroth[piexif.ImageIFD.Copyright] = copyright_str.encode("utf-8")
-            zeroth[piexif.ImageIFD.Artist] = copyright_str.encode("utf-8")
-
-        exif_ifd = {
-            piexif.ExifIFD.DateTimeOriginal: dt_str,
-            piexif.ExifIFD.DateTimeDigitized: dt_str,
-            piexif.ExifIFD.SubSecTimeOriginal: meta.get("subsec", "000").encode("utf-8")
-        }
-        for tag in [
-            piexif.ExifIFD.ExposureTime, piexif.ExifIFD.FNumber,
-            piexif.ExifIFD.ISOSpeedRatings, piexif.ExifIFD.FocalLength, piexif.ExifIFD.LensModel
-        ]:
-            if tag in orig_exif:
-                exif_ifd[tag] = orig_exif[tag]
-        return piexif.dump({"0th": zeroth, "Exif": exif_ifd, "GPS": {}, "1st": {}, "thumbnail": None})
-
     try:
+        dt_str = corrected_dt.strftime("%Y:%m:%d %H:%M:%S").encode("utf-8")
+        subsec_bytes = str(meta.get("subsec", "000")).encode("utf-8")
+        raw = meta.get("raw_exif")
+
+        if exif_mode == "①納品最適(日時のみ)" or not raw:
+            zeroth = {piexif.ImageIFD.Orientation: 1, piexif.ImageIFD.DateTime: dt_str}
+            exif_ifd = {
+                piexif.ExifIFD.DateTimeOriginal: dt_str,
+                piexif.ExifIFD.DateTimeDigitized: dt_str,
+                piexif.ExifIFD.SubSecTimeOriginal: subsec_bytes,
+            }
+            if copyright_str:
+                c_bytes = copyright_str.encode("utf-8")
+                zeroth[piexif.ImageIFD.Copyright] = c_bytes
+                zeroth[piexif.ImageIFD.Artist] = c_bytes
+            return piexif.dump({"0th": zeroth, "Exif": exif_ifd, "GPS": {}, "1st": {}, "thumbnail": None})
+
+        if exif_mode == "②カメラ維持":
+            orig_0th = raw.get("0th", {})
+            orig_exif = raw.get("Exif", {})
+            zeroth = {piexif.ImageIFD.Orientation: 1, piexif.ImageIFD.DateTime: dt_str}
+            for tag in [piexif.ImageIFD.Make, piexif.ImageIFD.Model]:
+                if tag in orig_0th:
+                    zeroth[tag] = orig_0th[tag]
+            if copyright_str:
+                c_bytes = copyright_str.encode("utf-8")
+                zeroth[piexif.ImageIFD.Copyright] = c_bytes
+                zeroth[piexif.ImageIFD.Artist] = c_bytes
+
+            exif_ifd = {
+                piexif.ExifIFD.DateTimeOriginal: dt_str,
+                piexif.ExifIFD.DateTimeDigitized: dt_str,
+                piexif.ExifIFD.SubSecTimeOriginal: subsec_bytes,
+            }
+            for tag in [
+                piexif.ExifIFD.ExposureTime, piexif.ExifIFD.FNumber,
+                piexif.ExifIFD.ISOSpeedRatings, piexif.ExifIFD.FocalLength, piexif.ExifIFD.LensModel
+            ]:
+                if tag in orig_exif:
+                    exif_ifd[tag] = orig_exif[tag]
+            return piexif.dump({"0th": zeroth, "Exif": exif_ifd, "GPS": {}, "1st": {}, "thumbnail": None})
+
+        # ③完全維持
         copied = dict(raw)
         copied["0th"] = dict(raw.get("0th", {}))
         copied["Exif"] = dict(raw.get("Exif", {}))
@@ -913,7 +981,6 @@ if DND_AVAILABLE:
 
 
 class PatternListItem(ctk.CTkFrame):
-    """文字切れしないコンパクトなタグ表記のパターン選択行"""
     def __init__(self, master, data: dict, on_select_cb, on_delete_cb):
         super().__init__(master, fg_color=COLOR_ELEVATED, corner_radius=5, border_width=1, border_color=COLOR_BORDER, height=34)
         self.pack_propagate(False)
@@ -988,13 +1055,13 @@ class PatternListItem(ctk.CTkFrame):
 
 
 # ==========================================
-# メインウィンドウ (v4.1 Universal Win/Mac Edition)
+# メインウィンドウ (v4.2 Thread-Safe & Read-Only Resilient Edition)
 # ==========================================
 
 class PhotoDeliveryApp(BaseWindowClass):
     def __init__(self):
         super().__init__()
-        self.title("Instant Delivery & SNS Studio  —  v4.1")
+        self.title("Instant Delivery & SNS Studio  —  v4.2")
         self.geometry("1440x880")
         self.minsize(1240, 760)
         self.configure(fg_color=COLOR_BG)
@@ -1016,11 +1083,14 @@ class PhotoDeliveryApp(BaseWindowClass):
         self._cached_single_source = None
 
         self._build_ui()
-        self._load_default_patterns()
+
+        if not self._restore_autosave_if_exists():
+            self._load_default_patterns()
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close_window)
         self.schedule_preview_update()
 
     def _build_ui(self):
-        # --- スリム・トップヘッダー ---
         top_bar = ctk.CTkFrame(self, height=40, fg_color=COLOR_SURFACE, corner_radius=0)
         top_bar.pack(fill="x", padx=0, pady=(0, 8))
         top_bar.pack_propagate(False)
@@ -1031,7 +1101,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.1", font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.2", font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
@@ -1052,7 +1122,6 @@ class PhotoDeliveryApp(BaseWindowClass):
                 font=ui_font(11), command=cmd
             ).pack(side="right", padx=3)
 
-        # --- メイン2カラム（左580px固定サイドバー ＋ 右ワイドプレビュー） ---
         main_body = ctk.CTkFrame(self, fg_color="transparent")
         main_body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
 
@@ -1070,7 +1139,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         self._build_right_preview_pane()
 
     def _make_dropdown(self, parent, values, width=115, command=None):
-        """デザインを統一したスリムなプルダウンメニュー生成ヘルパー"""
         return ctk.CTkOptionMenu(
             parent, values=values, width=width, height=26, corner_radius=4,
             dynamic_resizing=False, fg_color=COLOR_INPUT,
@@ -1080,7 +1148,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         )
 
     def _build_left_pane(self):
-        # SECTION 1: ソース読込 & 出力ファイル規則
         sec1 = ctk.CTkFrame(self.left_pane, fg_color=COLOR_SURFACE, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         sec1.pack(fill="x", pady=(0, 8))
 
@@ -1138,7 +1205,6 @@ class PhotoDeliveryApp(BaseWindowClass):
             checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11)
         ).pack(side="left", padx=2)
 
-        # SECTION 2: 同時書き出しパターン一覧
         sec2 = ctk.CTkFrame(self.left_pane, fg_color=COLOR_SURFACE, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         sec2.pack(fill="x", pady=(0, 8))
 
@@ -1161,7 +1227,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.list_scroll = ctk.CTkScrollableFrame(sec2, height=120, fg_color="transparent")
         self.list_scroll.pack(fill="x", padx=4, pady=(0, 4))
 
-        # SECTION 3: 統合インスペクター（完全グリッド整列）
         self.inspector_tabs = ctk.CTkTabview(
             self.left_pane, fg_color=COLOR_SURFACE, corner_radius=6, border_width=1, border_color=COLOR_BORDER,
             segmented_button_fg_color=COLOR_BG,
@@ -1181,7 +1246,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         self._build_camera_tab(tab_cam)
 
     def _build_pattern_inspector_tab(self, parent):
-        """3列×3行の厳密なGridレイアウトで縦のラインを完全に揃える"""
         head_row = ctk.CTkFrame(parent, fg_color="transparent")
         head_row.pack(fill="x", padx=8, pady=(2, 6))
 
@@ -1203,7 +1267,6 @@ class PhotoDeliveryApp(BaseWindowClass):
             ctk.CTkLabel(cell, text=label_txt, font=ui_font(11), text_color=COLOR_TEXT_SUB, anchor="w").pack(fill="x", pady=(0, 2))
             return cell
 
-        # Row 0: フォルダ名 | 縦横比率 | 出力サイズ
         c00 = make_cell(0, 0, "出力フォルダ名")
         self.insp_folder_entry = ctk.CTkEntry(
             c00, height=26, corner_radius=4, fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
@@ -1221,7 +1284,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         )
         self.insp_res_cb.pack(fill="x")
 
-        # Row 1: 枠・背景スタイル | 四方余白 | ロゴ配置
         c10 = make_cell(1, 0, "枠・背景スタイル")
         self.insp_frame_cb = self._make_dropdown(
             c10, ["枠なし", "白枠", "黒枠", "ブラー(明・すりガラス)", "ブラー(標準・そのまま)", "ブラー(暗・シネマ風)"],
@@ -1241,7 +1303,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         )
         self.insp_wm_cb.pack(fill="x")
 
-        # Row 2: 枠外EXIF印字 | EXIF保存モード
         c20 = make_cell(2, 0, "枠外EXIF文字レイアウト")
         self.insp_exif_print_cb = self._make_dropdown(
             c20, ["印字なし", "センター2段", "左右スプリット"], command=lambda _: self._on_inspector_changed()
@@ -1254,7 +1315,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         )
         self.insp_exif_mode_cb.pack(fill="x")
 
-        # 背景ブラー微調整セクション
         blur_card = ctk.CTkFrame(parent, fg_color=COLOR_ELEVATED, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         blur_card.pack(fill="x", padx=6, pady=(8, 2))
 
@@ -1352,7 +1412,7 @@ class PhotoDeliveryApp(BaseWindowClass):
 
             def handle_pick(entry=path_entry, m_cb=mode_cb):
                 if m_cb.get() == "PNG":
-                    p = filedialog.askopenfilename(filetypes=[("PNG Image", "*.png *.PNG"), ("All", "*.*")])
+                    p = filedialog.askopenfilename(filetypes=[("PNG Image", "*.png"), ("All", "*.*")])
                     if p:
                         entry.delete(0, "end")
                         entry.insert(0, p)
@@ -1526,7 +1586,6 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.copyright_entry.pack(fill="x")
 
     def _build_right_preview_pane(self):
-        # プレビュー上部バー
         p_head = ctk.CTkFrame(self.right_pane, height=40, fg_color="transparent")
         p_head.pack(fill="x", padx=12, pady=(8, 4))
         p_head.pack_propagate(False)
@@ -1548,12 +1607,10 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.preview_layout_mode.set("縦横向き比較")
         self.preview_layout_mode.pack(side="right")
 
-        # メインプレビューキャンバス領域
         self.preview_stage = ctk.CTkFrame(self.right_pane, fg_color=COLOR_BG, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         self.preview_stage.pack(fill="both", expand=True, padx=12, pady=4)
         self.preview_stage.pack_propagate(False)
 
-        # --- モード1: 全パターン比較 (2x2 グリッド) ---
         self.grid_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
         self.grid_stage.grid_columnconfigure(0, weight=1)
         self.grid_stage.grid_columnconfigure(1, weight=1)
@@ -1574,7 +1631,6 @@ class PhotoDeliveryApp(BaseWindowClass):
 
             self.grid_cells.append({"frame": cell, "title": title_l, "img": img_l})
 
-        # --- モード2: 縦横向き比較 (上下2段) ---
         self.dual_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
 
         self.land_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5)
@@ -1593,14 +1649,12 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.port_img_lbl = ctk.CTkLabel(self.port_card, text="")
         self.port_img_lbl.pack(expand=True, pady=2)
 
-        # --- モード3: 1枚拡大表示 ---
         self.single_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
         self.single_title = ctk.CTkLabel(self.single_stage, text="", width=600, anchor="center", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
         self.single_title.pack(pady=(6, 2))
         self.single_img_lbl = ctk.CTkLabel(self.single_stage, text="")
         self.single_img_lbl.pack(fill="both", expand=True, pady=4)
 
-        # 下部統合コントロール＆実行フッター
         footer_bar = ctk.CTkFrame(self.right_pane, height=52, fg_color="transparent")
         footer_bar.pack(fill="x", padx=12, pady=(4, 10))
         footer_bar.pack_propagate(False)
@@ -1623,7 +1677,7 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         prog_box = ctk.CTkFrame(footer_bar, fg_color="transparent")
         prog_box.pack(side="left", fill="x", expand=True, padx=14, pady=6)
-        self.status_label = ctk.CTkLabel(prog_box, text="Ready", anchor="w", font=ui_font(11), text_color=COLOR_TEXT_SUB)
+        self.status_label = ctk.CTkLabel(prog_box, text="Ready (Auto-save enabled)", anchor="w", font=ui_font(11), text_color=COLOR_TEXT_SUB)
         self.status_label.pack(fill="x")
         self.progress_bar = ctk.CTkProgressBar(prog_box, height=6, corner_radius=3, fg_color=COLOR_BG, progress_color=COLOR_ACCENT)
         self.progress_bar.pack(fill="x", pady=(4, 0))
@@ -1908,8 +1962,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             self._register_input_paths([folder])
 
     def select_files(self):
-        # Macでも選択可能なスペース区切り指定
-        files = filedialog.askopenfilenames(filetypes=[("JPEG/PNG Images", "*.jpg *.jpeg *.png *.JPG *.JPEG *.PNG")])
+        files = filedialog.askopenfilenames(filetypes=[("JPEG/PNG Images", "*.jpg;*.jpeg;*.png")])
         if files:
             self._register_input_paths(files)
 
@@ -2001,13 +2054,17 @@ class PhotoDeliveryApp(BaseWindowClass):
             "replace_rules": rules
         }
 
-    # --- 一括並列書き出し ---
+    # --- スレッドセーフ & 例外復帰保証付き一括並列書き出し ---
+    def _set_export_progress_ui(self, prog: float, text: str):
+        self.progress_bar.set(prog)
+        self.status_label.configure(text=text)
+
     def start_batch_export(self):
         if not self.image_files:
             messagebox.showwarning("未選択", "先に写真フォルダまたは画像ファイルを選択してください。")
             return
 
-        active_patterns = [it.data for it in self.pattern_items if it.data.get("enabled", True)]
+        active_patterns = [dict(it.data) for it in self.pattern_items if it.data.get("enabled", True)]
         if not active_patterns:
             messagebox.showwarning("パターン未選択", "少なくとも1つの出力パターンにチェックを入れてください。")
             return
@@ -2016,15 +2073,22 @@ class PhotoDeliveryApp(BaseWindowClass):
         if not out_root:
             return
 
+        self._save_state_to_file(AUTOSAVE_FILE)
+
         self.run_btn.configure(state="disabled", text="書き出し中...")
+        self.progress_bar.set(0)
         wm_cfgs = self._collect_wm_configs()
         cap_cfg = self._collect_caption_config()
         sort_mode = self.sort_mode_cb.get()
         event_base = self.event_name_entry.get().strip() or "Event"
         make_zip = self.zip_var.get()
         sync_time = self.sync_time_var.get()
-        jpeg_q = int(self.jpeg_q_entry.get() or 95)
+        try:
+            jpeg_q = max(1, min(100, int(self.jpeg_q_entry.get() or 95)))
+        except ValueError:
+            jpeg_q = 95
         copyright_str = self.copyright_entry.get().strip()
+        files_snapshot = list(self.image_files)
 
         cam_offsets = {}
         for cam, (m_e, s_e) in self.camera_offset_widgets.items():
@@ -2036,108 +2100,153 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         def worker():
             start_t = time.time()
-            items = []
-            for p in self.image_files:
-                meta = extract_exif_metadata(p)
-                cam = meta["camera"] or "EXIFカメラ名なし"
-                offset_sec = cam_offsets.get(cam, 0)
-                corr_dt = meta["datetime"] + timedelta(seconds=offset_sec)
-                items.append({"path": p, "meta": meta, "corrected_dt": corr_dt, "name": Path(p).stem})
-
-            if sort_mode.startswith("EXIF撮影日時順"):
-                items.sort(key=lambda x: (x["corrected_dt"], x["meta"]["subsec"], x["name"]))
-            else:
-                items.sort(key=lambda x: x["name"])
-
             delivery_root = Path(out_root) / f"{event_base}_Delivery"
-            delivery_root.mkdir(parents=True, exist_ok=True)
-            for pat in active_patterns:
-                (delivery_root / pat["folder"]).mkdir(parents=True, exist_ok=True)
+            try:
+                items = []
+                for p in files_snapshot:
+                    meta = extract_exif_metadata(p)
+                    cam = meta["camera"] or "EXIFカメラ名なし"
+                    offset_sec = cam_offsets.get(cam, 0)
+                    corr_dt = meta["datetime"] + timedelta(seconds=offset_sec)
+                    items.append({"path": p, "meta": meta, "corrected_dt": corr_dt, "name": Path(p).stem})
 
-            total_count = len(items)
-            digits = max(3, len(str(total_count)))
-
-            def process_one(idx_and_item):
-                idx, item = idx_and_item
-                p = item["path"]
-                meta = item["meta"]
-                corr_dt = item["corrected_dt"]
-
-                if sort_mode.startswith("リネームしない"):
-                    base_filename = f"{item['name']}.jpg"
+                if sort_mode.startswith("EXIF撮影日時順"):
+                    items.sort(key=lambda x: (x["corrected_dt"], x["meta"]["subsec"], x["name"]))
                 else:
-                    base_filename = f"{event_base}_{str(idx + 1).zfill(digits)}.jpg"
+                    items.sort(key=lambda x: x["name"])
 
-                with Image.open(p) as raw_im:
-                    icc = raw_im.info.get("icc_profile")
-                    base_im = ImageOps.exif_transpose(raw_im).convert("RGB")
-
+                delivery_root.mkdir(parents=True, exist_ok=True)
                 for pat in active_patterns:
-                    out_img = render_single_pattern(base_im, meta, pat, wm_cfgs, cap_cfg)
-                    out_path = delivery_root / pat["folder"] / base_filename
-                    exif_bytes = build_filtered_exif_bytes(meta, pat["exif_mode"], corr_dt, copyright_str)
+                    (delivery_root / pat["folder"]).mkdir(parents=True, exist_ok=True)
 
-                    save_kwargs = {"quality": jpeg_q, "subsampling": 0}
-                    if icc:
-                        save_kwargs["icc_profile"] = icc
-                    if exif_bytes:
-                        save_kwargs["exif"] = exif_bytes
+                total_count = len(items)
+                digits = max(3, len(str(total_count)))
 
-                    out_img.save(str(out_path), "JPEG", **save_kwargs)
+                def process_one(idx_and_item):
+                    idx, item = idx_and_item
+                    p = item["path"]
+                    meta = item["meta"]
+                    corr_dt = item["corrected_dt"]
 
-                    if sync_time:
-                        ts = corr_dt.timestamp()
-                        os.utime(str(out_path), (ts, ts))
+                    if sort_mode.startswith("リネームしない"):
+                        base_filename = f"{item['name']}.jpg"
+                    else:
+                        base_filename = f"{event_base}_{str(idx + 1).zfill(digits)}.jpg"
 
-                return idx + 1
+                    with Image.open(p) as raw_im:
+                        icc = raw_im.info.get("icc_profile")
+                        base_im = ImageOps.exif_transpose(raw_im).convert("RGB")
 
-            completed = 0
-            with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as ex:
-                for _ in ex.map(process_one, enumerate(items)):
-                    completed += 1
-                    self.progress_bar.set(completed / total_count)
-                    self.status_label.configure(text=f"Processing: {completed} / {total_count}")
+                    for pat in active_patterns:
+                        out_img = render_single_pattern(base_im, meta, pat, wm_cfgs, cap_cfg)
+                        out_path = delivery_root / pat["folder"] / base_filename
+                        exif_bytes = build_filtered_exif_bytes(meta, pat["exif_mode"], corr_dt, copyright_str)
 
-            if make_zip:
-                self.status_label.configure(text="Creating ZIP archives...")
-                for pat in active_patterns:
-                    folder_path = delivery_root / pat["folder"]
-                    zip_path = delivery_root / f"{pat['folder']}.zip"
-                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                        for f in sorted(folder_path.iterdir()):
-                            zf.write(f, arcname=f.name)
+                        save_kwargs = {"quality": jpeg_q, "subsampling": 0}
+                        if icc:
+                            save_kwargs["icc_profile"] = icc
+                        if exif_bytes:
+                            save_kwargs["exif"] = exif_bytes
 
-            elapsed = time.time() - start_t
-            self.status_label.configure(text=f"完了 ({total_count}枚 × {len(active_patterns)}パターン / {elapsed:.1f}s)")
-            self.run_btn.configure(state="normal", text="全パターン一括書き出し")
-            open_folder(str(delivery_root))
+                        out_img.save(str(out_path), "JPEG", **save_kwargs)
 
-        import threading
+                        if sync_time:
+                            try:
+                                ts = corr_dt.timestamp()
+                                os.utime(str(out_path), (ts, ts))
+                            except OSError:
+                                pass
+
+                    return idx + 1
+
+                completed = 0
+                with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as ex:
+                    for _ in ex.map(process_one, enumerate(items)):
+                        completed += 1
+                        prog = completed / total_count
+                        msg = f"Processing: {completed} / {total_count}"
+                        self.after(0, self._set_export_progress_ui, prog, msg)
+
+                if make_zip:
+                    self.after(0, lambda: self.status_label.configure(text="Creating ZIP archives..."))
+                    for pat in active_patterns:
+                        folder_path = delivery_root / pat["folder"]
+                        zip_path = delivery_root / f"{pat['folder']}.zip"
+                        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                            for f in sorted(folder_path.iterdir()):
+                                zf.write(f, arcname=f.name)
+
+                elapsed = time.time() - start_t
+                done_msg = f"完了 ({total_count}枚 × {len(active_patterns)}パターン / {elapsed:.1f}s)"
+                target_dir_str = str(delivery_root)
+                self.after(0, lambda m=done_msg, d=target_dir_str: (
+                    self._set_export_progress_ui(1.0, m),
+                    open_folder(d)
+                ))
+            except Exception as exc:
+                err_msg = str(exc)
+                self.after(0, lambda m=err_msg: (
+                    self.status_label.configure(text=f"エラー中断: {m}"),
+                    messagebox.showerror("書き出しエラー", f"処理中にエラーが発生しました:\n{m}")
+                ))
+            finally:
+                self.after(0, lambda: self.run_btn.configure(state="normal", text="全パターン一括書き出し"))
+
         threading.Thread(target=worker, daemon=True).start()
 
-    def save_preset(self):
-        p = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Preset", "*.json")])
-        if not p:
-            return
-        data = {
+    # ==========================================
+    # プリセット保存・読込 & 自動オートセーブ機能
+    # ==========================================
+
+    def _build_state_dict(self) -> dict:
+        sel_idx = 0
+        if self.selected_item in self.pattern_items:
+            sel_idx = self.pattern_items.index(self.selected_item)
+        return {
             "event_name": self.event_name_entry.get(),
             "sort_mode": self.sort_mode_cb.get(),
             "zip": self.zip_var.get(),
             "sync_time": self.sync_time_var.get(),
+            "jpeg_q": self.jpeg_q_entry.get(),
+            "copyright": self.copyright_entry.get(),
+            "pro_mode": self.pro_mode_var.get(),
+            "preview_mode": self.preview_layout_mode.get(),
+            "selected_pattern_index": sel_idx,
             "wm_configs": self._collect_wm_configs(),
             "caption_config": self._collect_caption_config(),
             "patterns": [it.data for it in self.pattern_items]
         }
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        messagebox.showinfo("保存完了", "プリセットを保存しました。")
 
-    def load_preset(self):
-        p = filedialog.askopenfilename(filetypes=[("JSON Preset", "*.json")])
-        if not p:
-            return
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    def _save_state_to_file(self, filepath: Path):
+        try:
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+            data = self._build_state_dict()
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _apply_state_dict(self, data: dict):
+        if "event_name" in data:
+            self.event_name_entry.delete(0, "end")
+            self.event_name_entry.insert(0, data["event_name"])
+        if "sort_mode" in data:
+            self.sort_mode_cb.set(data["sort_mode"])
+        if "zip" in data:
+            self.zip_var.set(bool(data["zip"]))
+        if "sync_time" in data:
+            self.sync_time_var.set(bool(data["sync_time"]))
+        if "jpeg_q" in data:
+            self.jpeg_q_entry.delete(0, "end")
+            self.jpeg_q_entry.insert(0, str(data["jpeg_q"]))
+        if "copyright" in data:
+            self.copyright_entry.delete(0, "end")
+            self.copyright_entry.insert(0, data["copyright"])
+        if "preview_mode" in data and data["preview_mode"] in ["全パターン比較", "縦横向き比較", "1枚拡大"]:
+            self.preview_layout_mode.set(data["preview_mode"])
+        if "pro_mode" in data:
+            self.pro_mode_var.set(bool(data["pro_mode"]))
+            self._toggle_ui_mode()
 
         for w, saved_wm in zip(self.wm_slot_widgets, data.get("wm_configs", [])):
             w["enabled"].set(saved_wm.get("enabled", False))
@@ -2157,17 +2266,69 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         cap_saved = data.get("caption_config", {})
         if cap_saved:
+            self.cap_cam_var.set(cap_saved.get("show_camera", True))
+            self.cap_lens_var.set(cap_saved.get("show_lens", True))
+            self.cap_focal_var.set(cap_saved.get("show_focal", False))
+            self.cap_fnum_var.set(cap_saved.get("show_fnumber", False))
+            self.cap_ss_var.set(cap_saved.get("show_shutter", False))
+            self.cap_iso_var.set(cap_saved.get("show_iso", False))
+            self.cap_date_var.set(cap_saved.get("show_date", False))
+
+            self.cap_custom_entry.delete(0, "end")
+            self.cap_custom_entry.insert(0, cap_saved.get("custom_text", ""))
+
+            self.cap_font_entry.delete(0, "end")
+            self.cap_font_entry.insert(0, cap_saved.get("font_path", ""))
+
             self.cap_font_scale_slider.set(cap_saved.get("font_scale_pct", 100.0))
             self.cap_bottom_space_slider.set(cap_saved.get("bottom_space_pct", 5.0))
 
-        for it in list(self.pattern_items):
-            it.destroy()
-        self.pattern_items.clear()
-        for pat in data.get("patterns", []):
-            self.add_pattern_item(pat, select_now=False)
-        if self.pattern_items:
-            self.select_pattern_item(self.pattern_items[-1])
+            if "replace_rules" in cap_saved:
+                self.cap_replace_entry.delete(0, "end")
+                self.cap_replace_entry.insert(0, cap_saved["replace_rules"].replace("\n", ", "))
 
+        patterns = data.get("patterns", [])
+        if patterns:
+            for it in list(self.pattern_items):
+                it.destroy()
+            self.pattern_items.clear()
+            for pat in patterns:
+                self.add_pattern_item(pat, select_now=False)
+
+            sel_idx = int(data.get("selected_pattern_index", len(self.pattern_items) - 1))
+            sel_idx = max(0, min(sel_idx, len(self.pattern_items) - 1))
+            self.select_pattern_item(self.pattern_items[sel_idx])
+
+    def _restore_autosave_if_exists(self) -> bool:
+        if not AUTOSAVE_FILE.exists():
+            return False
+        try:
+            with open(AUTOSAVE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._apply_state_dict(data)
+            self.status_label.configure(text="前回の設定を自動復元しました")
+            return True
+        except Exception:
+            return False
+
+    def _on_close_window(self):
+        self._save_state_to_file(AUTOSAVE_FILE)
+        self.destroy()
+
+    def save_preset(self):
+        p = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Preset", "*.json")])
+        if not p:
+            return
+        self._save_state_to_file(Path(p))
+        messagebox.showinfo("保存完了", "プリセットを保存しました。")
+
+    def load_preset(self):
+        p = filedialog.askopenfilename(filetypes=[("JSON Preset", "*.json")])
+        if not p:
+            return
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self._apply_state_dict(data)
         self.schedule_preview_update()
         messagebox.showinfo("読込完了", "プリセットを読み込みました。")
 
