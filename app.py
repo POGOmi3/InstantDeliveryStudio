@@ -1067,21 +1067,14 @@ class PhotoDeliveryApp(BaseWindowClass):
         super().__init__()
         self.title("Instant Delivery & SNS Studio  —  v4.3")
 
-        try:
-            win_scaling = float(self._get_window_scaling())
-            if win_scaling <= 0:
-                win_scaling = 1.0
-        except Exception:
-            win_scaling = 1.0
-
-        screen_w = max(800, int(self.winfo_screenwidth() / win_scaling))
-        screen_h = max(600, int(self.winfo_screenheight() / win_scaling))
-        init_w = min(1440, screen_w - 24) if screen_w > 1000 else screen_w
-        init_h = min(880, screen_h - 68) if screen_h > 640 else max(560, screen_h - 40)
+        screen_w = max(800, int(self.winfo_screenwidth()))
+        screen_h = max(600, int(self.winfo_screenheight()))
+        init_w = min(1440, screen_w - 40) if screen_w > 1040 else max(800, screen_w - 16)
+        init_h = min(880, screen_h - 80) if screen_h > 660 else max(560, screen_h - 48)
         self.geometry(f"{init_w}x{init_h}")
 
-        min_w = min(980, screen_w)
-        min_h = min(560, screen_h - 48)
+        min_w = min(1100, init_w)
+        min_h = min(580, init_h)
         self.minsize(min_w, min_h)
         self.configure(fg_color=COLOR_BG)
 
@@ -1800,7 +1793,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.run_btn.pack(side="right", pady=3)
 
     def _on_preview_stage_configure(self, event):
-        if event.widget is not self.preview_stage:
+        if event.widget not in (self.preview_stage, getattr(self.preview_stage, "_canvas", None)):
             return
         new_size = (event.width, event.height)
         if new_size != self._last_stage_size:
