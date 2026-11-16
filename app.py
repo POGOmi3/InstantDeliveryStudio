@@ -1693,6 +1693,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.preview_stage.pack_propagate(False)
         self.preview_stage.bind("<Configure>", self._on_preview_stage_configure)
 
+        # --- モード1: 全パターン比較 (2x2 グリッド) ---
         self.grid_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
         self.grid_stage.grid_columnconfigure(0, weight=1)
         self.grid_stage.grid_columnconfigure(1, weight=1)
@@ -1703,39 +1704,45 @@ class PhotoDeliveryApp(BaseWindowClass):
         for i in range(4):
             r_idx, c_idx = divmod(i, 2)
             cell = ctk.CTkFrame(self.grid_stage, fg_color=COLOR_SURFACE, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
-            cell.grid(row=r_idx, column=c_idx, sticky="nsew", padx=4, pady=4)
+            cell.grid(row=r_idx, column=c_idx, padx=4, pady=4)
             cell.pack_propagate(False)
 
             title_l = ctk.CTkLabel(cell, text="", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
-            title_l.pack(pady=(4, 2))
+            title_l.pack(fill="x", pady=(4, 2), padx=4)
             img_l = ctk.CTkLabel(cell, text="")
             img_l.pack(expand=True, pady=2)
 
             self.grid_cells.append({"frame": cell, "title": title_l, "img": img_l})
 
+        # --- モード2: 縦横向き比較 (上下2段) ---
         self.dual_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
 
-        self.land_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5)
-        self.land_card.pack(fill="both", expand=True, padx=4, pady=(4, 2))
+        self.land_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
+        self.land_card.pack(expand=True, pady=(4, 2))
         self.land_card.pack_propagate(False)
         self.land_title = ctk.CTkLabel(self.land_card, text="LANDSCAPE", anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
-        self.land_title.pack(fill="x", pady=(4, 0), padx=4)
+        self.land_title.pack(fill="x", pady=(4, 0), padx=6)
         self.land_img_lbl = ctk.CTkLabel(self.land_card, text="")
         self.land_img_lbl.pack(expand=True, pady=2)
 
-        self.port_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5)
-        self.port_card.pack(fill="both", expand=True, padx=4, pady=(2, 4))
+        self.port_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
+        self.port_card.pack(expand=True, pady=(2, 4))
         self.port_card.pack_propagate(False)
         self.port_title = ctk.CTkLabel(self.port_card, text="PORTRAIT", anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
-        self.port_title.pack(fill="x", pady=(4, 0), padx=4)
+        self.port_title.pack(fill="x", pady=(4, 0), padx=6)
         self.port_img_lbl = ctk.CTkLabel(self.port_card, text="")
         self.port_img_lbl.pack(expand=True, pady=2)
 
+        # --- モード3: 1枚拡大表示 ---
         self.single_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
-        self.single_title = ctk.CTkLabel(self.single_stage, text="", anchor="center", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
-        self.single_title.pack(fill="x", pady=(6, 2), padx=6)
-        self.single_img_lbl = ctk.CTkLabel(self.single_stage, text="")
-        self.single_img_lbl.pack(fill="both", expand=True, pady=4)
+
+        self.single_card = ctk.CTkFrame(self.single_stage, fg_color=COLOR_SURFACE, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
+        self.single_card.pack(expand=True, pady=4)
+        self.single_card.pack_propagate(False)
+        self.single_title = ctk.CTkLabel(self.single_card, text="", anchor="center", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
+        self.single_title.pack(fill="x", pady=(6, 2), padx=8)
+        self.single_img_lbl = ctk.CTkLabel(self.single_card, text="")
+        self.single_img_lbl.pack(expand=True, pady=4)
 
         footer_bar = ctk.CTkFrame(self.right_pane, height=52, fg_color="transparent")
         footer_bar.pack(fill="x", padx=12, pady=(4, 10))
@@ -1773,6 +1780,8 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.run_btn.pack(side="right", pady=4)
 
     def _on_preview_stage_configure(self, event):
+        if event.widget is not self.preview_stage:
+            return
         new_size = (event.width, event.height)
         if new_size != self._last_stage_size:
             self._last_stage_size = new_size
@@ -1976,19 +1985,31 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.dual_stage.pack_forget()
         self.single_stage.pack_forget()
 
-        # プレビュー枠の実際の寸法を取得（未初期化時はデフォルト値）
-        stage_w = max(300, self.preview_stage.winfo_width())
-        stage_h = max(200, self.preview_stage.winfo_height())
+        raw_w = self.preview_stage.winfo_width()
+        raw_h = self.preview_stage.winfo_height()
+        stage_w = raw_w if raw_w > 10 else 820
+        stage_h = raw_h if raw_h > 10 else 660
+
+        inner_w = max(240, stage_w - 12)
+        inner_h = max(240, stage_h - 12)
 
         if mode == "全パターン比較":
             self.grid_stage.pack(fill="both", expand=True, padx=4, pady=4)
 
-            # 従来寸法（350x275）を上限として枠に合わせて縮小
-            cell_w = max(180, min(350, (stage_w - 24) // 2))
-            cell_h = max(120, min(275, (stage_h - 28) // 2))
-            max_edge = min(560, max(cell_w, cell_h))
+            max_cell_w = max(160, (inner_w - 16) // 2)
+            max_cell_h = max(130, (inner_h - 16) // 2)
+            avail_img_w = max(120, max_cell_w - 12)
+            avail_img_h = max(95, max_cell_h - 32)
+
+            scale = min(1.0, avail_img_w / 350.0, avail_img_h / 275.0)
+            img_w = max(120, int(350 * scale))
+            img_h = max(95, int(275 * scale))
+            cell_frame_w = img_w + 12
+            cell_frame_h = img_h + 32
+            max_edge = min(560, max(320, int(560 * scale)))
 
             for idx, cell in enumerate(self.grid_cells):
+                cell["frame"].configure(width=cell_frame_w, height=cell_frame_h)
                 if idx < len(self.pattern_items):
                     pat_item = self.pattern_items[idx]
                     pat_data = pat_item.data
@@ -1999,14 +2020,14 @@ class PhotoDeliveryApp(BaseWindowClass):
                         fg_color=COLOR_ACTIVE_ROW if is_sel else COLOR_SURFACE
                     )
                     rendered = render_single_pattern(base_im, meta, pat_data, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
-                    stage_img = place_on_fixed_stage(rendered, cell_w, cell_h, bg_rgb=(37, 42, 58) if is_sel else (22, 24, 29))
+                    stage_img = place_on_fixed_stage(rendered, img_w, img_h, bg_rgb=(37, 42, 58) if is_sel else (22, 24, 29))
 
                     state_dot = "• " if pat_data.get("enabled", True) else "(OFF) "
                     cell["title"].configure(
                         text=f"{state_dot}{pat_data['folder']}   [{pat_data['aspect']} / {pat_data['frame_style']}]",
                         text_color=COLOR_TEXT_MAIN if is_sel else COLOR_TEXT_SUB
                     )
-                    ctk_im = ctk.CTkImage(light_image=stage_img, dark_image=stage_img, size=(cell_w, cell_h))
+                    ctk_im = ctk.CTkImage(light_image=stage_img, dark_image=stage_img, size=(img_w, img_h))
                     cell["img"].configure(image=ctk_im, text="")
                     cell["img"].image = ctk_im
 
@@ -2022,24 +2043,34 @@ class PhotoDeliveryApp(BaseWindowClass):
             pattern = self.selected_item.data
             land_im, land_meta, land_name, port_im, port_meta, port_name = self._get_dual_orientation_sources()
 
-            # 従来寸法（580x295）を上限として枠に合わせて縮小
-            card_w = max(250, min(580, stage_w - 16))
-            card_h = max(120, min(295, (stage_h - 48) // 2))
-            max_edge = min(740, max(card_w, card_h))
+            max_card_w = max(220, inner_w - 8)
+            max_card_h = max(130, (inner_h - 12) // 2)
+            avail_img_w = max(200, max_card_w - 12)
+            avail_img_h = max(95, max_card_h - 32)
+
+            scale = min(1.0, avail_img_w / 580.0, avail_img_h / 295.0)
+            img_w = max(200, int(580 * scale))
+            img_h = max(95, int(295 * scale))
+            card_frame_w = img_w + 12
+            card_frame_h = img_h + 32
+            max_edge = min(740, max(420, int(740 * scale)))
+
+            self.land_card.configure(width=card_frame_w, height=card_frame_h)
+            self.port_card.configure(width=card_frame_w, height=card_frame_h)
 
             r_land = render_single_pattern(land_im, land_meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
             r_port = render_single_pattern(port_im, port_meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
 
-            stage_land = place_on_fixed_stage(r_land, card_w, card_h)
-            stage_port = place_on_fixed_stage(r_port, card_w, card_h)
+            stage_land = place_on_fixed_stage(r_land, img_w, img_h, bg_rgb=(22, 24, 29))
+            stage_port = place_on_fixed_stage(r_port, img_w, img_h, bg_rgb=(22, 24, 29))
 
             self.land_title.configure(text=f"横位置: {land_name}   ({pattern['aspect']} · {pattern['frame_style']})")
-            ctk_l = ctk.CTkImage(light_image=stage_land, dark_image=stage_land, size=(card_w, card_h))
+            ctk_l = ctk.CTkImage(light_image=stage_land, dark_image=stage_land, size=(img_w, img_h))
             self.land_img_lbl.configure(image=ctk_l)
             self.land_img_lbl.image = ctk_l
 
             self.port_title.configure(text=f"縦位置: {port_name}   ({pattern['aspect']} · {pattern['frame_style']})")
-            ctk_p = ctk.CTkImage(light_image=stage_port, dark_image=stage_port, size=(card_w, card_h))
+            ctk_p = ctk.CTkImage(light_image=stage_port, dark_image=stage_port, size=(img_w, img_h))
             self.port_img_lbl.configure(image=ctk_p)
             self.port_img_lbl.image = ctk_p
 
@@ -2047,16 +2078,23 @@ class PhotoDeliveryApp(BaseWindowClass):
             self.single_stage.pack(fill="both", expand=True, padx=4, pady=4)
             pattern = self.selected_item.data
 
-            # 従来寸法（680x580）を上限として枠に合わせて縮小
-            single_w = max(300, min(680, stage_w - 16))
-            single_h = max(200, min(580, stage_h - 40))
-            max_edge = min(1000, max(single_w, single_h))
+            avail_img_w = max(240, inner_w - 20)
+            avail_img_h = max(200, inner_h - 46)
+
+            scale = min(1.0, avail_img_w / 680.0, avail_img_h / 580.0)
+            img_w = max(240, int(680 * scale))
+            img_h = max(200, int(580 * scale))
+            card_frame_w = img_w + 16
+            card_frame_h = img_h + 40
+            max_edge = min(1000, max(520, int(1000 * scale)))
+
+            self.single_card.configure(width=card_frame_w, height=card_frame_h)
 
             rendered = render_single_pattern(base_im, meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
-            stage_single = place_on_fixed_stage(rendered, single_w, single_h)
+            stage_single = place_on_fixed_stage(rendered, img_w, img_h, bg_rgb=(22, 24, 29))
 
             self.single_title.configure(text=f"{name}   —   {pattern['folder']}  ({pattern['aspect']} · {pattern['frame_style']})")
-            ctk_s = ctk.CTkImage(light_image=stage_single, dark_image=stage_single, size=(single_w, single_h))
+            ctk_s = ctk.CTkImage(light_image=stage_single, dark_image=stage_single, size=(img_w, img_h))
             self.single_img_lbl.configure(image=ctk_s)
             self.single_img_lbl.image = ctk_s
 

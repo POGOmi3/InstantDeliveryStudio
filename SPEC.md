@@ -31,7 +31,7 @@
 ---
 
 ## 3. アーキテクチャ（主要クラス・関数と役割の切り分け）
-単一ファイル `app.py`（約2,470行）内に、以下の4層を分離して実装している。
+単一ファイル `app.py`（約2,500行）内に、以下の4層を分離して実装している。
 
 ### A. OS・パス解決・ユーティリティ層
 - `_resolve_storage_dirs()`: スクリプト実行時とPyInstaller凍結時（`sys.frozen`、macOS `.app` バンドル階層含む）の双方で実行ファイル横のディレクトリを特定。さらに書き込みテストを行い、読み取り専用環境（DMG内からの直接起動や保護フォルダ配下）ではOS標準のユーザーデータ領域（Mac: `~/Library/Application Support/InstantDeliveryStudio` / Win: `%LOCALAPPDATA%\InstantDeliveryStudio`）へ `LOCAL_FONTS_DIR` と `AUTOSAVE_FILE` を自動退避する。
