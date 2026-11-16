@@ -1245,7 +1245,9 @@ class PhotoDeliveryApp(BaseWindowClass):
         )
         self.add_pat_btn.pack(side="right")
 
-        self.list_scroll = ctk.CTkScrollableFrame(sec2, height=84, fg_color="transparent")
+        self.list_scroll = ctk.CTkScrollableFrame(sec2, height=96, fg_color="transparent")
+        # CTkScrollbar の既定長 (200) が一覧の高さを上書きしてしまうため、スクロールバー側にも同じ高さを指定する
+        self.list_scroll._scrollbar.configure(height=96)
         self.list_scroll.pack(fill="x", padx=4, pady=(0, 4))
 
         self.inspector_tabs = ctk.CTkTabview(
@@ -1661,6 +1663,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         left.pack(side="left", fill="both", expand=True, padx=(4, 4), pady=2)
         ctk.CTkLabel(left, text="カメラ別 時刻オフセット (分 / 秒)", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB).pack(anchor="w", padx=10, pady=6)
         self.cam_list_frame = ctk.CTkScrollableFrame(left, height=130, fg_color="transparent")
+        self.cam_list_frame._scrollbar.configure(height=130)
         self.cam_list_frame.pack(fill="both", expand=True, padx=4, pady=2)
         ctk.CTkLabel(self.cam_list_frame, text="写真読込時にカメラ機種を自動一覧化します", font=ui_font(11), text_color=COLOR_TEXT_MUTED).pack(anchor="w", padx=6, pady=6)
 
