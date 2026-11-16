@@ -316,7 +316,7 @@ class FontPickerDialog(ctk.CTkToplevel):
         self.preview_img_label.image = ctk_img
 
     def _browse_direct_file(self):
-        p = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf;*.otf;*.ttc"), ("All", "*.*")])
+        p = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf *.otf *.ttc"), ("All", "*.*")])
         if p:
             self.selected_path = p
             self._confirm()
@@ -1962,7 +1962,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             self._register_input_paths([folder])
 
     def select_files(self):
-        files = filedialog.askopenfilenames(filetypes=[("JPEG/PNG Images", "*.jpg;*.jpeg;*.png")])
+        files = filedialog.askopenfilenames(filetypes=[("JPEG/PNG Images", "*.jpg *.jpeg *.png")])
         if files:
             self._register_input_paths(files)
 
