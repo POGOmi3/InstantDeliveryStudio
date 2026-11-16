@@ -1,4 +1,4 @@
-# Instant Delivery & SNS Studio (v4.1) 仕様・構造ドキュメント (SPEC.md)
+# Instant Delivery & SNS Studio (v4.2) 仕様・構造ドキュメント (SPEC.md)
 
 ## 1. アプリの目的と主な機能
 イベント・ライブ撮影等におけるクライアント即納用データおよびSNS公開用データを、1回の読み込み（1パス）で複数パターン同時に並列生成するデスクトップ画像処理ツール。
@@ -9,7 +9,7 @@
 - **マルチスロット・ウォーターマーク合成**: 最大4枠まで同時配置可能。透過PNG（余白自動トリム・明背景時の暗色反転対応）およびテキスト（PC内フォント検索・ローカル `fonts` フォルダ参照・文字間隔トラッキング調整）に対応し、文字/ロゴ本体の端を基準とした余白計算とドロップシャドウ付与を行う。
 - **枠外EXIFテキスト印字**: カメラ名・レンズ名・露出情報（焦点距離 / F値 / SS / ISO / 撮影日）・自由追記テキスト（フィルム名等）を「センター2段」または「左右スプリット」で下部余白に印字。メーカー表記等の文字列置換ルールにも対応。
 - **EXIFフィルタリング再構築 ＆ 複数カメラ時刻ズレ補正**: 読み込みフォルダ内のカメラ機種を自動検出し、分・秒単位の時刻オフセットを加算してEXIF撮影日時順（ミリ秒 `SubSecTimeOriginal` 対応）で連番リネーム・ソート。EXIF保存は4段階（①納品最適[日時のみ] / ②カメラ維持 / ③完全維持 / ④全削除）＋Copyright埋め込み・OSファイル更新日時同期（`os.utime`）に対応。
-- **3モード切替リアルタイム・プレビュー**: 「全パターン比較（2×2グリッド）」「縦横向き比較（片方向のみ読込時は中央クロップで逆向きを仮想生成）」「1枚拡大」を50ms前後のデバウンス制御でリアルタイム描画。
+- **3モード切替リアルタイム・プレビュー**: 「全パターン比較（2×2グリッド）」「縦横向き比較（片方向のみ読込時は中央クロップで逆向きを仮想生成）」「1枚拡大」を45msデバウンス制御でリアルタイム描画。
 - **設定管理・オートセーブ**: JSON形式でのプリセット保存・読込に加え、ウィンドウ終了時および書き出し実行時に `autosave_config.json` へ全UIステートを自動保存し、次回起動時に自動復元する。
 - **フォルダ別ZIP自動生成**: 書き出し完了後、各出力パターンフォルダを個別にZIPアーカイブ化。
 
@@ -17,55 +17,59 @@
 
 ## 2. 動作環境と使用フレームワーク・ライブラリ
 - **言語・想定ランタイム**: Python 3.12（Windows 10/11 実機稼働確認済、macOS クロスプラットフォーム対応コード実装済）
-- **GUIフレームワーク**: `customtkinter` + 標準 `tkinter`（`Listbox` 等の一部ネイティブ部品）
-- **ドラッグ＆ドロップ拡張**: `tkinterdnd2`（未導入環境では自動でボタン選択UIへフォールバック）
-- **画像処理**: `Pillow` (`PIL`)
-- **EXIF解析・バイナリ生成**: `piexif`
-- **パッケージング / CI**: `PyInstaller`（Windows単一 `.exe` 化確認済、GitHub Actionsによる自動ビルド構成あり）
+- **依存ライブラリ (`requirements.txt` で上限・下限を管理)**:
+  - `customtkinter>=5.2.2,<6.0.0` + 標準 `tkinter`（ファイル選択ダイアログ拡張子指定はWin/Mac共通のスペース区切り方式）
+  - `Pillow>=10.4.0,<14.0.0`
+  - `piexif==1.1.3`
+  - `tkinterdnd2>=0.3.0,<0.5.0`（未導入環境では自動でボタン選択UIへフォールバック）
+  - `pyinstaller>=6.10.0,<7.0.0`
+- **CI / パッケージング (`.github/workflows/build.yml`)**:
+  - Node.js 24 対応アクション（`actions/checkout@v5`、`actions/setup-python@v6`、`actions/upload-artifact@v6`）を使用。
+  - Windows (`windows-2025`): `--onefile --noconsole` で単一 `.exe` を生成。
+  - macOS (`macos-15` [arm64] / `macos-15-intel` [x86_64]): PyInstaller v7.0 仕様に準拠し、`--windowed`（`onedir` 形式）で `.app` を生成後、アドホック署名と `hdiutil` による `.dmg` パッケージ化を実行。
 
 ---
 
 ## 3. アーキテクチャ（主要クラス・関数と役割の切り分け）
-現在は単一ファイル `app.py`（約1,100行）内に、以下の4層を分離して実装している。
+単一ファイル `app.py`（約1,120行）内に、以下の4層を分離して実装している。
 
 ### A. OS・パス解決・ユーティリティ層
-- `BASE_APP_DIR` / `LOCAL_FONTS_DIR` / `AUTOSAVE_FILE`: スクリプト実行時とPyInstaller凍結時（`sys.frozen`、macOS `.app` バンドル階層含む）の双方で実行ファイル横のパスを解決。
+- `_resolve_storage_dirs()`: スクリプト実行時とPyInstaller凍結時（`sys.frozen`、macOS `.app` バンドル階層含む）の双方で実行ファイル横のディレクトリを特定。さらに書き込みテストを行い、読み取り専用環境（DMG内からの直接起動や保護フォルダ配下）ではOS標準のユーザーデータ領域（Mac: `~/Library/Application Support/InstantDeliveryStudio` / Win: `%LOCALAPPDATA%\InstantDeliveryStudio`）へ `LOCAL_FONTS_DIR` と `AUTOSAVE_FILE` を自動退避する。
 - `open_folder(path_str)`: Windows (`os.startfile`) / macOS (`open`) / Linux (`xdg-open`) 対応のフォルダ展開関数。
-- `scan_pc_fonts(force_refresh)` / `load_font(font_path, size)`: OS別のシステム・ユーザーフォントフォルダと `./fonts` をスキャンして `_SYSTEM_FONTS_CACHE` に保持し、指定フォントまたはOS標準フォントへ安全にフォールバックする。
+- `scan_pc_fonts(force_refresh)` / `load_font(font_path, size)`: OS別のシステム・ユーザーフォントフォルダおよび `LOCAL_FONTS_DIR` / `BUNDLED_FONTS_DIR` をスキャンして `_SYSTEM_FONTS_CACHE` に保持。
 
 ### B. 画像処理・レンダリング層（ステートレス関数群）
-- `render_single_pattern(base_img, meta, pattern, wm_configs, caption_cfg, preview_max_edge)`: 1枚の画像に対する単一パターンの統合レンダリング関数（キャンバス比率計算、リサイズ、枠・ブラー合成、WM配置、枠外EXIF文字描画）。プレビュー時は `preview_max_edge` 指定で縮小高速描画を行う。
-- `generate_blurred_background(...)`: 中央80%クロップ＋`GaussianBlur`＋モード別色調補正（`ImageEnhance.Color` / 明暗レイヤー `Image.blend`）による背景ブラー生成。
-- `create_text_watermark(...)` / `apply_drop_shadow(...)` / `paste_watermarks_on_surface(...)`: トラッキング付きテキスト画像生成、短辺基準のドロップシャドウ生成、およびシャドウの透明パディング量を差し引いた四隅への正確なアルファ合成。
-- `place_on_fixed_stage(...)` / `make_simulated_opposite_orientation(...)` / `create_sample_dummy_image(...)`: プレビュー時のアスペクト比変化によるUI揺れを防ぐ固定台紙配置、仮想縦横クロップ生成、未読込時のダミー画像生成。
+- `render_single_pattern(base_img, meta, pattern, wm_configs, caption_cfg, preview_max_edge)`: 1枚の画像に対する単一パターンの統合レンダリング関数。
+- `generate_blurred_background(...)`: 中央80%クロップ＋`GaussianBlur`＋モード別色調補正による背景ブラー生成。
+- `create_text_watermark(...)` / `apply_drop_shadow(...)` / `paste_watermarks_on_surface(...)`: トラッキング付きテキスト画像生成、短辺基準のドロップシャドウ生成、および透明パディング量を差し引いた四隅へのアルファ合成。
+- `place_on_fixed_stage(...)` / `make_simulated_opposite_orientation(...)` / `create_sample_dummy_image(...)`: プレビュー時のUI揺れを防ぐ固定台紙配置、仮想縦横クロップ生成、ダミー画像生成。
 
 ### C. EXIFメタデータ処理層
-- `extract_exif_metadata(img_path)`: `piexif.load` で日時・ミリ秒・カメラ名・レンズ名・露出値・生EXIF辞書を抽出（EXIF欠損時はファイル更新日時へフォールバック）。
-- `build_filtered_exif_bytes(meta, exif_mode, corrected_dt, copyright_str)`: 保存モード①〜④とオフセット補正後日時・Copyrightを反映して `piexif.dump` バイナリを生成（`ImageOps.exif_transpose` 適用後のため `Orientation` は `1` に正規化）。
+- `_safe_decode_exif_str(raw_val, default)` / `extract_exif_metadata(img_path)`: `bytes` / `str` 両対応の安全なデコードとタプル長チェックを行い、日時・ミリ秒・カメラ名・レンズ名・露出値・生EXIF辞書を抽出（EXIF欠損時はファイル更新日時へフォールバック）。
+- `build_filtered_exif_bytes(meta, exif_mode, corrected_dt, copyright_str)`: 保存モード①〜④すべてを `try ... except` で保護し、不正タグ混入時でもスレッドを止めずに `None`（EXIFなし保存）へフォールバックする。
 
 ### D. GUI・状態管理・並列バッチ実行層
-- `DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper)`: `customtkinter` と `tkinterdnd2` を多重継承で統合するベースウィンドウクラス（`TkinterDnD._require(self)` を使用）。
-- `FontPickerDialog(ctk.CTkToplevel)`: インクリメンタル検索とリアルタイム文字描画プレビューを備えたフォント選択ダイアログ。
-- `SliderEntryWidget(ctk.CTkFrame)`: `CTkSlider` と `CTkEntry` の双方向同期および変更コールバック発火を行う共通コンポーネント。
-- `PatternListItem(ctk.CTkFrame)`: 同時出力パターン一覧の1行ウィジェット（選択状態管理・ショート表記サマリー更新）。
+- `DnDCTk(ctk.CTk, TkinterDnD.DnDWrapper)`: `customtkinter` と `tkinterdnd2` の統合ベースクラス。
+- `FontPickerDialog(ctk.CTkToplevel)` / `SliderEntryWidget(ctk.CTkFrame)` / `PatternListItem(ctk.CTkFrame)`: フォント選択ダイアログ、スライダー・数値入力双方向同期部品、パターン一覧行部品。
 - `PhotoDeliveryApp(BaseWindowClass)`: メインアプリクラス。
-  - **UI構築・固定ロック**: `_build_ui` ほか。`pack_propagate(False)` と `CTkOptionMenu(dynamic_resizing=False)` により、項目切替時のレイアウト揺れを防止。
-  - **プレビュー制御**: `schedule_preview_update()`（45msデバウンス）→ `_render_live_preview_now()`。プレビュー元画像は `_cached_single_source` / `_cached_dual_sources` にサムネイル化してメモリ保持し、スライダー操作時のディスクI/Oを排除。
-  - **並列バッチ出力**: `start_batch_export()` 内の `worker()`（`threading.Thread`）から `ThreadPoolExecutor` で `process_one()` を並列実行し、全パターンのJPEG保存・タイムスタンプ同期・ZIP圧縮を行う。
+  - **UI固定ロック**: `pack_propagate(False)` と `CTkOptionMenu(dynamic_resizing=False)` により項目切替時のレイアウト揺れを防止。
+  - **プレビュー制御**: `schedule_preview_update()`（45msデバウンス）→ `_render_live_preview_now()`。
+  - **スレッドセーフ並列バッチ出力**: `start_batch_export()` 内の `worker()` から `ThreadPoolExecutor` で並列JPEG保存・ZIP圧縮を実行。進捗・完了・エラー表示はすべて `self.after(0, ...)` 経由でメインスレッドから更新し、`try ... finally` によって例外発生時でも必ず実行ボタンが有効状態に復帰する。
   - **状態永続化**: `_build_state_dict()` / `_apply_state_dict()` / `_restore_autosave_if_exists()` / `_on_close_window()` によるJSONプリセット入出力およびオートセーブ。
 
 ---
 
-## 4. 現時点の課題とアップデート時の注意点・ボトルネック
-1. **macOS実機向けビルド・配布の未完了課題（保留中）**
-   - GitHub Actions上での `.app` / `.dmg` ビルドにおいて、Apple Silicon (`arm64`) と Intel (`x86_64`) のアーキテクチャ差異、PyInstallerにおける `--onefile` と `--windowed` の併用制限、およびGatekeeperのアドホック署名・検疫まわりの実機起動検証が未完了（現在はWindows `.exe` 運用を優先）。
-2. **ワーカースレッドからのTkinterウィジェット直接操作（スレッドセーフティ）**
-   - `start_batch_export` 内の別スレッド `worker()` から `self.progress_bar.set()` や `self.status_label.configure()`、`self.run_btn.configure()` を直接呼び出している。Windowsでは動作しているが、macOS（Cocoa Tcl/Tk）や将来のPython/Tkバージョンではクラッシュ要因となるため、改修時は `self.after(0, ...)` 経由のメインスレッド更新へ寄せるのが安全。
-3. **大量ファイル読込時のメインスレッド同期EXIFスキャン**
-   - `_scan_cameras_in_files()` が読み込み時に全画像へ `extract_exif_metadata()` をメインスレッド上で同期実行し、さらに書き出し開始時にも再スキャンしている。数百〜数千枚規模のフォルダを投入した際にUIが一時フリーズするボトルネックになり得るため、メタデータのキャッシュ化または非同期スキャン化が今後の改善候補。
-4. **`piexif.dump()` の「③完全維持」モードにおけるカメラ固有タグ例外**
-   - 一部メーカーのMakerNoteや特殊型タグを含むJPEGで `piexif.dump()` が型エラーを起こすケースがあり、現状は `except Exception: return None` で握り潰してEXIFなし保存へフォールバックする仕様になっている。
-5. **`tkinterdnd2` と `customtkinter` の内部API依存**
-   - `DnDCTk` クラスで内部メソッド `TkinterDnD._require(self)` を呼んでいるため、両ライブラリのメジャーアップデート時に互換性確認が必須。
-6. **UI揺れ防止ロックの維持**
-   - 左右ペイン・各カードの `pack_propagate(False)`、プルダウンの `dynamic_resizing=False`、プレビューの `place_on_fixed_stage()` はレイアウトのブレを防ぐための必須設計であり、UI改修時にこれらを解除しないこと。
+## 4. 解決済み項目と今後の監視・改善ポイント
+### v4.2 にて対応完了済みの項目
+- `requirements.txt` のバージョン上限設定および `build.yml` での参照統一
+- GitHub Actions の Node.js 24 対応版（`checkout@v5` / `setup-python@v6` / `upload-artifact@v6`）への更新
+- macOS ビルドの `onedir`（`--windowed`）移行および読み取り専用起動時のユーザー領域フォールバック（`_resolve_storage_dirs`）
+- ワーカースレッドからのUI更新の `self.after(0, ...)` 化と、`try ... finally` による実行ボタン復帰保証
+- EXIF全モードの例外保護（`build_filtered_exif_bytes`）およびタグ型安全性強化（`_safe_decode_exif_str`）
+- ファイル選択ダイアログ（`filedialog`）の拡張子フィルターをWindows/macOS共通のスペース区切り書式に統一
+
+### 今後の監視・検証項目
+1. **macOS実機での `onedir` 版 `.dmg` 起動・ファイル選択確認**: Apple Silicon / Intel 実機での初回起動（Gatekeeper解除手順含む）およびフォント・画像選択ダイアログの動作確認。
+2. **大量ファイル読込時の初回同期EXIFスキャン**: 数百〜数千枚投入時に `_scan_cameras_in_files()` と書き出し開始時のEXIFスキャンを統合・キャッシュ化する改善余地。
+3. **`tkinterdnd2` の `_require` 内部API依存**: バージョン更新時の起動・ドロップ動作確認。
+4. **GitHub Actions `macos-15-intel` ランナーの提供期限**: 2027年8月頃の提供終了に向けたUniversal2化または構成見直し。
