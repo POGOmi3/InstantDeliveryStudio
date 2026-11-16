@@ -1987,8 +1987,16 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         raw_w = self.preview_stage.winfo_width()
         raw_h = self.preview_stage.winfo_height()
-        stage_w = raw_w if raw_w > 10 else 820
-        stage_h = raw_h if raw_h > 10 else 660
+        try:
+            scaling = float(self._get_widget_scaling())
+            if scaling <= 0:
+                scaling = 1.0
+        except Exception:
+            scaling = 1.0
+        logical_w = int(raw_w / scaling)
+        logical_h = int(raw_h / scaling)
+        stage_w = logical_w if logical_w > 10 else 820
+        stage_h = logical_h if logical_h > 10 else 660
 
         inner_w = max(240, stage_w - 12)
         inner_h = max(240, stage_h - 12)
