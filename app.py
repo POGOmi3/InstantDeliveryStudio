@@ -102,6 +102,10 @@ COLOR_BORDER = "#282b36"      # 1px ボーダー
 COLOR_INPUT = "#262934"       # プルダウン・入力欄背景
 COLOR_INPUT_HOVER = "#323644" # ホバー時
 COLOR_ACCENT = "#3b82f6"      # 選択アクセント
+
+# ウォーターマークスロット数の下限・上限
+WM_SLOT_MIN = 1
+WM_SLOT_MAX = 20
 COLOR_PRIMARY_BTN = "#2563eb" # メインアクションボタン
 COLOR_PRIMARY_HOVER = "#1d4ed8"
 COLOR_TEXT_MAIN = "#f4f4f5"   # メイン文字
@@ -1055,15 +1059,25 @@ class PatternListItem(ctk.CTkFrame):
 
 
 # ==========================================
-# メインウィンドウ (v4.2 Thread-Safe & Read-Only Resilient Edition)
+# メインウィンドウ (v4.3 Thread-Safe & Read-Only Resilient Edition)
 # ==========================================
 
 class PhotoDeliveryApp(BaseWindowClass):
     def __init__(self):
         super().__init__()
-        self.title("Instant Delivery & SNS Studio  —  v4.2")
-        self.geometry("1440x880")
-        self.minsize(1240, 760)
+        self.title("Instant Delivery & SNS Studio  —  v4.3")
+
+        # 画面解像度を取得し、起動サイズが画面を超えないようにクランプ
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        init_w = min(1440, screen_w - 40) if screen_w > 1024 else screen_w
+        init_h = min(880, screen_h - 60) if screen_h > 700 else screen_h
+        self.geometry(f"{init_w}x{init_h}")
+
+        # 最小サイズを 1024x640 程度に緩和しつつ画面サイズを超えないようにする
+        min_w = min(1024, screen_w)
+        min_h = min(640, screen_h)
+        self.minsize(min_w, min_h)
         self.configure(fg_color=COLOR_BG)
 
         self.image_files = []
@@ -1081,6 +1095,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.sample_portrait = create_sample_dummy_image(is_portrait=True)
         self._cached_dual_sources = None
         self._cached_single_source = None
+        self._last_stage_size = (0, 0)
 
         self._build_ui()
 
@@ -1101,7 +1116,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.2", font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.3", font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
@@ -1344,13 +1359,23 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         ctk.CTkLabel(slot_bar, text="編集スロット", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 8))
 
-        self.slot_selector = ctk.CTkSegmentedButton(
-            slot_bar, values=["Slot 1", "Slot 2", "Slot 3", "Slot 4"],
-            command=self._switch_wm_slot_view, width=260, height=26, font=ui_font(11, "bold"),
-            fg_color=COLOR_BG, selected_color=COLOR_ACCENT, unselected_color=COLOR_ELEVATED
+        self.slot_selector = self._make_dropdown(
+            slot_bar, values=["Slot 1"], width=110, command=self._switch_wm_slot_view
         )
         self.slot_selector.set("Slot 1")
-        self.slot_selector.pack(side="left")
+        self.slot_selector.pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            slot_bar, text="+ 追加", width=54, height=26, corner_radius=4,
+            fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11, "bold"),
+            command=self._add_wm_slot
+        ).pack(side="left", padx=2)
+
+        ctk.CTkButton(
+            slot_bar, text="削除", width=50, height=26, corner_radius=4,
+            fg_color=COLOR_INPUT, hover_color="#7f1d1d", font=ui_font(11),
+            command=self._remove_current_wm_slot
+        ).pack(side="left", padx=2)
 
         self.wm_panel_container = ctk.CTkFrame(parent, fg_color=COLOR_ELEVATED, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         self.wm_panel_container.pack(fill="both", expand=True, padx=6, pady=2)
@@ -1363,118 +1388,174 @@ class PhotoDeliveryApp(BaseWindowClass):
         ]
 
         for idx, d in enumerate(defaults):
-            slot_frame = ctk.CTkFrame(self.wm_panel_container, fg_color="transparent")
-            self.wm_slot_frames.append(slot_frame)
+            self._create_wm_slot(d)
 
-            r1 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-            r1.pack(fill="x", padx=10, pady=(10, 4))
-
-            en_var = ctk.BooleanVar(value=d["enabled"])
-            ctk.CTkCheckBox(
-                r1, text=f"Slot {idx+1} を有効化", variable=en_var,
-                checkbox_width=16, checkbox_height=16, corner_radius=4,
-                font=ui_font(12, "bold"), command=self.schedule_preview_update
-            ).pack(side="left", padx=(0, 12))
-
-            ctk.CTkLabel(r1, text="方式", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
-            mode_cb = self._make_dropdown(r1, ["PNG", "テキスト(フォント)"], width=125)
-            mode_cb.set(d["mode"])
-            mode_cb.pack(side="left", padx=(0, 10))
-
-            ctk.CTkLabel(r1, text="位置", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
-            pos_cb = self._make_dropdown(r1, ["右下", "左下", "右上", "左上"], width=72, command=lambda _: self.schedule_preview_update())
-            pos_cb.set(d["pos"])
-            pos_cb.pack(side="left", padx=(0, 10))
-
-            ctk.CTkLabel(r1, text="影", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
-            sh_cb = self._make_dropdown(r1, ["なし", "弱", "中", "強"], width=68, command=lambda _: self.schedule_preview_update())
-            sh_cb.set(d["shadow"])
-            sh_cb.pack(side="left")
-
-            r2 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-            r2.pack(fill="x", padx=10, pady=6)
-
-            path_entry = ctk.CTkEntry(
-                r2, width=180, height=26, corner_radius=4, fg_color=COLOR_INPUT,
-                border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="フォント / PNGパス"
-            )
-            pick_btn = ctk.CTkButton(
-                r2, text="フォント選択", width=96, height=26, corner_radius=4,
-                fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11)
-            )
-
-            def on_mode_change(choice, btn=pick_btn):
-                btn.configure(text="PNG参照" if choice == "PNG" else "フォント選択")
-                self.schedule_preview_update()
-
-            mode_cb.configure(command=on_mode_change)
-            on_mode_change(d["mode"], pick_btn)
-
-            def handle_pick(entry=path_entry, m_cb=mode_cb):
-                if m_cb.get() == "PNG":
-                    p = filedialog.askopenfilename(filetypes=[("PNG Image", "*.png"), ("All", "*.*")])
-                    if p:
-                        entry.delete(0, "end")
-                        entry.insert(0, p)
-                        self.schedule_preview_update()
-                else:
-                    FontPickerDialog(self, entry, on_change_callback=self.schedule_preview_update)
-
-            pick_btn.configure(command=handle_pick)
-            pick_btn.pack(side="left", padx=(0, 6))
-            path_entry.pack(side="left", padx=(0, 10))
-            path_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
-
-            ctk.CTkLabel(r2, text="文字", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 4))
-            txt_entry = ctk.CTkEntry(
-                r2, height=26, corner_radius=4, fg_color=COLOR_INPUT,
-                border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="Photo by ..."
-            )
-            txt_entry.insert(0, d["text"])
-            txt_entry.pack(side="left", fill="x", expand=True)
-            txt_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
-
-            g_row1 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-            g_row1.pack(fill="x", padx=10, pady=(8, 4))
-
-            size_slider = SliderEntryWidget(
-                g_row1, "サイズ(%)", min_val=1.0, max_val=40.0, default_val=float(d["size"]),
-                step=0.5, on_change_cb=self.schedule_preview_update, label_width=68
-            )
-            size_slider.pack(side="left", fill="x", expand=True, padx=(0, 12))
-
-            margin_slider = SliderEntryWidget(
-                g_row1, "端余白(%)", min_val=-5.0, max_val=20.0, default_val=float(d["margin"]),
-                step=0.5, on_change_cb=self.schedule_preview_update, label_width=68
-            )
-            margin_slider.pack(side="left", fill="x", expand=True)
-
-            g_row2 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-            g_row2.pack(fill="x", padx=10, pady=(4, 8))
-
-            opacity_slider = SliderEntryWidget(
-                g_row2, "不透明度(%)", min_val=10.0, max_val=100.0, default_val=float(d["opacity"]),
-                step=1.0, on_change_cb=self.schedule_preview_update, label_width=68
-            )
-            opacity_slider.pack(side="left", fill="x", expand=True, padx=(0, 12))
-
-            tracking_slider = SliderEntryWidget(
-                g_row2, "文字間隔(%)", min_val=-5.0, max_val=50.0, default_val=float(d["tracking"]),
-                step=1.0, on_change_cb=self.schedule_preview_update, label_width=68
-            )
-            tracking_slider.pack(side="left", fill="x", expand=True)
-
-            self.wm_slot_widgets.append({
-                "enabled": en_var, "mode": mode_cb, "path": path_entry, "text": txt_entry,
-                "pos": pos_cb, "size": size_slider, "margin": margin_slider,
-                "opacity": opacity_slider, "tracking": tracking_slider,
-                "shadow": sh_cb, "pick_btn": pick_btn
-            })
-
+        self._refresh_wm_slot_labels()
         self._switch_wm_slot_view("Slot 1")
 
+    def _create_wm_slot(self, d: dict):
+        idx = len(self.wm_slot_widgets)
+        slot_frame = ctk.CTkFrame(self.wm_panel_container, fg_color="transparent")
+        self.wm_slot_frames.append(slot_frame)
+
+        r1 = ctk.CTkFrame(slot_frame, fg_color="transparent")
+        r1.pack(fill="x", padx=10, pady=(10, 4))
+
+        en_var = ctk.BooleanVar(value=d.get("enabled", False))
+        chk = ctk.CTkCheckBox(
+            r1, text=f"Slot {idx+1} を有効化", variable=en_var,
+            checkbox_width=16, checkbox_height=16, corner_radius=4,
+            font=ui_font(12, "bold"), command=self.schedule_preview_update
+        )
+        chk.pack(side="left", padx=(0, 12))
+
+        ctk.CTkLabel(r1, text="方式", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
+        mode_cb = self._make_dropdown(r1, ["PNG", "テキスト(フォント)"], width=125)
+        mode_cb.set(d.get("mode", "PNG"))
+        mode_cb.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(r1, text="位置", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
+        pos_cb = self._make_dropdown(r1, ["右下", "左下", "右上", "左上"], width=72, command=lambda _: self.schedule_preview_update())
+        pos_cb.set(d.get("position", d.get("pos", "右下")))
+        pos_cb.pack(side="left", padx=(0, 10))
+
+        ctk.CTkLabel(r1, text="影", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
+        sh_cb = self._make_dropdown(r1, ["なし", "弱", "中", "強"], width=68, command=lambda _: self.schedule_preview_update())
+        sh_cb.set(d.get("shadow", "弱"))
+        sh_cb.pack(side="left")
+
+        r2 = ctk.CTkFrame(slot_frame, fg_color="transparent")
+        r2.pack(fill="x", padx=10, pady=6)
+
+        path_entry = ctk.CTkEntry(
+            r2, width=180, height=26, corner_radius=4, fg_color=COLOR_INPUT,
+            border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="フォント / PNGパス"
+        )
+        path_entry.insert(0, d.get("path", d.get("font_path", "")))
+        pick_btn = ctk.CTkButton(
+            r2, text="フォント選択", width=96, height=26, corner_radius=4,
+            fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11)
+        )
+
+        def on_mode_change(choice, btn=pick_btn):
+            btn.configure(text="PNG参照" if choice == "PNG" else "フォント選択")
+            self.schedule_preview_update()
+
+        mode_cb.configure(command=on_mode_change)
+        on_mode_change(mode_cb.get(), pick_btn)
+
+        def handle_pick(entry=path_entry, m_cb=mode_cb):
+            if m_cb.get() == "PNG":
+                p = filedialog.askopenfilename(filetypes=[("PNG Image", "*.png"), ("All", "*.*")])
+                if p:
+                    entry.delete(0, "end")
+                    entry.insert(0, p)
+                    self.schedule_preview_update()
+            else:
+                FontPickerDialog(self, entry, on_change_callback=self.schedule_preview_update)
+
+        pick_btn.configure(command=handle_pick)
+        pick_btn.pack(side="left", padx=(0, 6))
+        path_entry.pack(side="left", padx=(0, 10))
+        path_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
+
+        ctk.CTkLabel(r2, text="文字", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 4))
+        txt_entry = ctk.CTkEntry(
+            r2, height=26, corner_radius=4, fg_color=COLOR_INPUT,
+            border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="Photo by ..."
+        )
+        txt_entry.insert(0, d.get("text", ""))
+        txt_entry.pack(side="left", fill="x", expand=True)
+        txt_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
+
+        g_row1 = ctk.CTkFrame(slot_frame, fg_color="transparent")
+        g_row1.pack(fill="x", padx=10, pady=(8, 4))
+
+        size_slider = SliderEntryWidget(
+            g_row1, "サイズ(%)", min_val=1.0, max_val=40.0, default_val=float(d.get("size_pct", d.get("size", 12.0))),
+            step=0.5, on_change_cb=self.schedule_preview_update, label_width=68
+        )
+        size_slider.pack(side="left", fill="x", expand=True, padx=(0, 12))
+
+        margin_slider = SliderEntryWidget(
+            g_row1, "端余白(%)", min_val=-5.0, max_val=20.0, default_val=float(d.get("margin_pct", d.get("margin", 2.0))),
+            step=0.5, on_change_cb=self.schedule_preview_update, label_width=68
+        )
+        margin_slider.pack(side="left", fill="x", expand=True)
+
+        g_row2 = ctk.CTkFrame(slot_frame, fg_color="transparent")
+        g_row2.pack(fill="x", padx=10, pady=(4, 8))
+
+        opacity_slider = SliderEntryWidget(
+            g_row2, "不透明度(%)", min_val=10.0, max_val=100.0, default_val=float(d.get("opacity_pct", 90.0)),
+            step=1.0, on_change_cb=self.schedule_preview_update, label_width=68
+        )
+        opacity_slider.pack(side="left", fill="x", expand=True, padx=(0, 12))
+
+        tracking_slider = SliderEntryWidget(
+            g_row2, "文字間隔(%)", min_val=-5.0, max_val=50.0, default_val=float(d.get("tracking", 8.0)),
+            step=1.0, on_change_cb=self.schedule_preview_update, label_width=68
+        )
+        tracking_slider.pack(side="left", fill="x", expand=True)
+
+        self.wm_slot_widgets.append({
+            "enabled": en_var, "mode": mode_cb, "path": path_entry, "text": txt_entry,
+            "pos": pos_cb, "size": size_slider, "margin": margin_slider,
+            "opacity": opacity_slider, "tracking": tracking_slider,
+            "shadow": sh_cb, "pick_btn": pick_btn, "chk_label": chk
+        })
+
+    def _refresh_wm_slot_labels(self):
+        values = [f"Slot {i+1}" for i in range(len(self.wm_slot_widgets))]
+        self.slot_selector.configure(values=values)
+        for i, w in enumerate(self.wm_slot_widgets):
+            w["chk_label"].configure(text=f"Slot {i+1} を有効化")
+
+    def _add_wm_slot(self):
+        if len(self.wm_slot_widgets) >= WM_SLOT_MAX:
+            messagebox.showwarning("上限", "ウォーターマークスロットは最大20枠までです。")
+            return
+        default_dict = {
+            "enabled": False, "mode": "PNG", "text": "", "pos": "右下",
+            "size_pct": 10.0, "margin_pct": 2.5, "opacity_pct": 90.0,
+            "tracking": 8.0, "shadow": "弱", "path": "", "font_path": ""
+        }
+        self._create_wm_slot(default_dict)
+        self._refresh_wm_slot_labels()
+        new_label = f"Slot {len(self.wm_slot_widgets)}"
+        self.slot_selector.set(new_label)
+        self._switch_wm_slot_view(new_label)
+        self.schedule_preview_update()
+
+    def _remove_current_wm_slot(self):
+        if len(self.wm_slot_widgets) <= WM_SLOT_MIN:
+            messagebox.showwarning("確認", "最低1つのウォーターマークスロットが必要です。")
+            return
+        cur_val = self.slot_selector.get()
+        try:
+            idx = int(cur_val.replace("Slot", "").strip()) - 1
+        except ValueError:
+            idx = len(self.wm_slot_widgets) - 1
+
+        idx = max(0, min(idx, len(self.wm_slot_widgets) - 1))
+
+        self.wm_slot_frames[idx].destroy()
+        self.wm_slot_frames.pop(idx)
+        self.wm_slot_widgets.pop(idx)
+
+        self._refresh_wm_slot_labels()
+        target_idx = max(0, idx - 1)
+        target_label = f"Slot {target_idx + 1}"
+        self.slot_selector.set(target_label)
+        self._switch_wm_slot_view(target_label)
+        self.schedule_preview_update()
+
     def _switch_wm_slot_view(self, selected_label: str):
-        idx = int(selected_label.replace("Slot", "").strip()) - 1
+        try:
+            idx = int(selected_label.replace("Slot", "").strip()) - 1
+        except ValueError:
+            idx = 0
+        idx = max(0, min(idx, len(self.wm_slot_frames) - 1))
         for i, frame in enumerate(self.wm_slot_frames):
             if i == idx:
                 frame.pack(fill="both", expand=True)
@@ -1610,6 +1691,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.preview_stage = ctk.CTkFrame(self.right_pane, fg_color=COLOR_BG, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         self.preview_stage.pack(fill="both", expand=True, padx=12, pady=4)
         self.preview_stage.pack_propagate(False)
+        self.preview_stage.bind("<Configure>", self._on_preview_stage_configure)
 
         self.grid_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
         self.grid_stage.grid_columnconfigure(0, weight=1)
@@ -1636,22 +1718,22 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.land_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5)
         self.land_card.pack(fill="both", expand=True, padx=4, pady=(4, 2))
         self.land_card.pack_propagate(False)
-        self.land_title = ctk.CTkLabel(self.land_card, text="LANDSCAPE", width=560, anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
-        self.land_title.pack(pady=(4, 0))
+        self.land_title = ctk.CTkLabel(self.land_card, text="LANDSCAPE", anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
+        self.land_title.pack(fill="x", pady=(4, 0), padx=4)
         self.land_img_lbl = ctk.CTkLabel(self.land_card, text="")
         self.land_img_lbl.pack(expand=True, pady=2)
 
         self.port_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5)
         self.port_card.pack(fill="both", expand=True, padx=4, pady=(2, 4))
         self.port_card.pack_propagate(False)
-        self.port_title = ctk.CTkLabel(self.port_card, text="PORTRAIT", width=560, anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
-        self.port_title.pack(pady=(4, 0))
+        self.port_title = ctk.CTkLabel(self.port_card, text="PORTRAIT", anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
+        self.port_title.pack(fill="x", pady=(4, 0), padx=4)
         self.port_img_lbl = ctk.CTkLabel(self.port_card, text="")
         self.port_img_lbl.pack(expand=True, pady=2)
 
         self.single_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
-        self.single_title = ctk.CTkLabel(self.single_stage, text="", width=600, anchor="center", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
-        self.single_title.pack(pady=(6, 2))
+        self.single_title = ctk.CTkLabel(self.single_stage, text="", anchor="center", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
+        self.single_title.pack(fill="x", pady=(6, 2), padx=6)
         self.single_img_lbl = ctk.CTkLabel(self.single_stage, text="")
         self.single_img_lbl.pack(fill="both", expand=True, pady=4)
 
@@ -1689,6 +1771,12 @@ class PhotoDeliveryApp(BaseWindowClass):
             font=ui_font(13, "bold"), command=self.start_batch_export
         )
         self.run_btn.pack(side="right", pady=4)
+
+    def _on_preview_stage_configure(self, event):
+        new_size = (event.width, event.height)
+        if new_size != self._last_stage_size:
+            self._last_stage_size = new_size
+            self.schedule_preview_update()
 
     # --- パターンリスト ⇔ インスペクター連動 ---
     def _toggle_ui_mode(self):
@@ -1888,8 +1976,18 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.dual_stage.pack_forget()
         self.single_stage.pack_forget()
 
+        # プレビュー枠の実際の寸法を取得（未初期化時はデフォルト値）
+        stage_w = max(300, self.preview_stage.winfo_width())
+        stage_h = max(200, self.preview_stage.winfo_height())
+
         if mode == "全パターン比較":
             self.grid_stage.pack(fill="both", expand=True, padx=4, pady=4)
+
+            # 従来寸法（350x275）を上限として枠に合わせて縮小
+            cell_w = max(180, min(350, (stage_w - 24) // 2))
+            cell_h = max(120, min(275, (stage_h - 28) // 2))
+            max_edge = min(560, max(cell_w, cell_h))
+
             for idx, cell in enumerate(self.grid_cells):
                 if idx < len(self.pattern_items):
                     pat_item = self.pattern_items[idx]
@@ -1900,15 +1998,15 @@ class PhotoDeliveryApp(BaseWindowClass):
                         border_color=COLOR_ACCENT if is_sel else COLOR_BORDER,
                         fg_color=COLOR_ACTIVE_ROW if is_sel else COLOR_SURFACE
                     )
-                    rendered = render_single_pattern(base_im, meta, pat_data, wm_cfgs, cap_cfg, preview_max_edge=560)
-                    stage_img = place_on_fixed_stage(rendered, 350, 275, bg_rgb=(37, 42, 58) if is_sel else (22, 24, 29))
+                    rendered = render_single_pattern(base_im, meta, pat_data, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
+                    stage_img = place_on_fixed_stage(rendered, cell_w, cell_h, bg_rgb=(37, 42, 58) if is_sel else (22, 24, 29))
 
                     state_dot = "• " if pat_data.get("enabled", True) else "(OFF) "
                     cell["title"].configure(
                         text=f"{state_dot}{pat_data['folder']}   [{pat_data['aspect']} / {pat_data['frame_style']}]",
                         text_color=COLOR_TEXT_MAIN if is_sel else COLOR_TEXT_SUB
                     )
-                    ctk_im = ctk.CTkImage(light_image=stage_img, dark_image=stage_img, size=(350, 275))
+                    ctk_im = ctk.CTkImage(light_image=stage_img, dark_image=stage_img, size=(cell_w, cell_h))
                     cell["img"].configure(image=ctk_im, text="")
                     cell["img"].image = ctk_im
 
@@ -1924,30 +2022,41 @@ class PhotoDeliveryApp(BaseWindowClass):
             pattern = self.selected_item.data
             land_im, land_meta, land_name, port_im, port_meta, port_name = self._get_dual_orientation_sources()
 
-            r_land = render_single_pattern(land_im, land_meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=740)
-            r_port = render_single_pattern(port_im, port_meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=740)
+            # 従来寸法（580x295）を上限として枠に合わせて縮小
+            card_w = max(250, min(580, stage_w - 16))
+            card_h = max(120, min(295, (stage_h - 48) // 2))
+            max_edge = min(740, max(card_w, card_h))
 
-            stage_land = place_on_fixed_stage(r_land, 580, 295)
-            stage_port = place_on_fixed_stage(r_port, 580, 295)
+            r_land = render_single_pattern(land_im, land_meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
+            r_port = render_single_pattern(port_im, port_meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
+
+            stage_land = place_on_fixed_stage(r_land, card_w, card_h)
+            stage_port = place_on_fixed_stage(r_port, card_w, card_h)
 
             self.land_title.configure(text=f"横位置: {land_name}   ({pattern['aspect']} · {pattern['frame_style']})")
-            ctk_l = ctk.CTkImage(light_image=stage_land, dark_image=stage_land, size=(580, 295))
+            ctk_l = ctk.CTkImage(light_image=stage_land, dark_image=stage_land, size=(card_w, card_h))
             self.land_img_lbl.configure(image=ctk_l)
             self.land_img_lbl.image = ctk_l
 
             self.port_title.configure(text=f"縦位置: {port_name}   ({pattern['aspect']} · {pattern['frame_style']})")
-            ctk_p = ctk.CTkImage(light_image=stage_port, dark_image=stage_port, size=(580, 295))
+            ctk_p = ctk.CTkImage(light_image=stage_port, dark_image=stage_port, size=(card_w, card_h))
             self.port_img_lbl.configure(image=ctk_p)
             self.port_img_lbl.image = ctk_p
 
         else:  # 1枚拡大
             self.single_stage.pack(fill="both", expand=True, padx=4, pady=4)
             pattern = self.selected_item.data
-            rendered = render_single_pattern(base_im, meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=1000)
-            stage_single = place_on_fixed_stage(rendered, 680, 580)
+
+            # 従来寸法（680x580）を上限として枠に合わせて縮小
+            single_w = max(300, min(680, stage_w - 16))
+            single_h = max(200, min(580, stage_h - 40))
+            max_edge = min(1000, max(single_w, single_h))
+
+            rendered = render_single_pattern(base_im, meta, pattern, wm_cfgs, cap_cfg, preview_max_edge=max_edge)
+            stage_single = place_on_fixed_stage(rendered, single_w, single_h)
 
             self.single_title.configure(text=f"{name}   —   {pattern['folder']}  ({pattern['aspect']} · {pattern['frame_style']})")
-            ctk_s = ctk.CTkImage(light_image=stage_single, dark_image=stage_single, size=(680, 580))
+            ctk_s = ctk.CTkImage(light_image=stage_single, dark_image=stage_single, size=(single_w, single_h))
             self.single_img_lbl.configure(image=ctk_s)
             self.single_img_lbl.image = ctk_s
 
@@ -2248,21 +2357,40 @@ class PhotoDeliveryApp(BaseWindowClass):
             self.pro_mode_var.set(bool(data["pro_mode"]))
             self._toggle_ui_mode()
 
-        for w, saved_wm in zip(self.wm_slot_widgets, data.get("wm_configs", [])):
-            w["enabled"].set(saved_wm.get("enabled", False))
-            m_str = "PNG" if saved_wm.get("mode") == "PNG" else "テキスト(フォント)"
-            w["mode"].set(m_str)
-            w["pick_btn"].configure(text="PNG参照" if m_str == "PNG" else "フォント選択")
-            w["path"].delete(0, "end")
-            w["path"].insert(0, saved_wm.get("path", ""))
-            w["text"].delete(0, "end")
-            w["text"].insert(0, saved_wm.get("text", ""))
-            w["pos"].set(saved_wm.get("position", "右下"))
-            w["size"].set(saved_wm.get("size_pct", 12.0))
-            w["margin"].set(saved_wm.get("margin_pct", 2.0))
-            w["opacity"].set(saved_wm.get("opacity_pct", 90.0))
-            w["tracking"].set(saved_wm.get("tracking", 8.0))
-            w["shadow"].set(saved_wm.get("shadow", "弱"))
+        # wm_configs の復元（最大20枠対応）
+        saved_wm_list = data.get("wm_configs", [])
+        if saved_wm_list:
+            target_count = max(WM_SLOT_MIN, min(WM_SLOT_MAX, len(saved_wm_list)))
+            # 現在の枠数を target_count に調整
+            while len(self.wm_slot_widgets) < target_count:
+                default_dict = {
+                    "enabled": False, "mode": "PNG", "text": "", "pos": "右下",
+                    "size_pct": 10.0, "margin_pct": 2.5, "opacity_pct": 90.0,
+                    "tracking": 8.0, "shadow": "弱", "path": "", "font_path": ""
+                }
+                self._create_wm_slot(default_dict)
+            while len(self.wm_slot_widgets) > target_count:
+                idx = len(self.wm_slot_widgets) - 1
+                self.wm_slot_frames[idx].destroy()
+                self.wm_slot_frames.pop(idx)
+                self.wm_slot_widgets.pop(idx)
+            self._refresh_wm_slot_labels()
+
+            for w, saved_wm in zip(self.wm_slot_widgets, saved_wm_list):
+                w["enabled"].set(saved_wm.get("enabled", False))
+                m_str = "PNG" if saved_wm.get("mode") == "PNG" else "テキスト(フォント)"
+                w["mode"].set(m_str)
+                w["pick_btn"].configure(text="PNG参照" if m_str == "PNG" else "フォント選択")
+                w["path"].delete(0, "end")
+                w["path"].insert(0, saved_wm.get("path", saved_wm.get("font_path", "")))
+                w["text"].delete(0, "end")
+                w["text"].insert(0, saved_wm.get("text", ""))
+                w["pos"].set(saved_wm.get("position", saved_wm.get("pos", "右下")))
+                w["size"].set(saved_wm.get("size_pct", saved_wm.get("size", 12.0)))
+                w["margin"].set(saved_wm.get("margin_pct", saved_wm.get("margin", 2.0)))
+                w["opacity"].set(saved_wm.get("opacity_pct", 90.0))
+                w["tracking"].set(saved_wm.get("tracking", 8.0))
+                w["shadow"].set(saved_wm.get("shadow", "弱"))
 
         cap_saved = data.get("caption_config", {})
         if cap_saved:
