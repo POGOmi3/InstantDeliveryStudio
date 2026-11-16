@@ -349,7 +349,7 @@ class SliderEntryWidget(ctk.CTkFrame):
         self.is_int = (step >= 1.0 and float(step).is_integer())
 
         ctk.CTkLabel(
-            self, text=label_text, width=label_width, anchor="w",
+            self, text=label_text, width=label_width, height=22, anchor="w",
             font=ui_font(11), text_color=COLOR_TEXT_SUB
         ).pack(side="left")
 
@@ -364,7 +364,7 @@ class SliderEntryWidget(ctk.CTkFrame):
         self.slider.pack(side="left", fill="x", expand=True, padx=6)
 
         self.entry = ctk.CTkEntry(
-            self, width=46, height=24, corner_radius=4, justify="right",
+            self, width=46, height=22, corner_radius=4, justify="right",
             fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
         )
         self.entry.pack(side="left")
@@ -986,7 +986,7 @@ if DND_AVAILABLE:
 
 class PatternListItem(ctk.CTkFrame):
     def __init__(self, master, data: dict, on_select_cb, on_delete_cb):
-        super().__init__(master, fg_color=COLOR_ELEVATED, corner_radius=5, border_width=1, border_color=COLOR_BORDER, height=34)
+        super().__init__(master, fg_color=COLOR_ELEVATED, corner_radius=5, border_width=1, border_color=COLOR_BORDER, height=28)
         self.pack_propagate(False)
 
         self.data = dict(data)
@@ -998,26 +998,26 @@ class PatternListItem(ctk.CTkFrame):
         self.enabled_var = ctk.BooleanVar(value=self.data.get("enabled", True))
         self.chk = ctk.CTkCheckBox(
             self, text="", variable=self.enabled_var, width=18, height=18,
-            checkbox_width=16, checkbox_height=16, corner_radius=4,
+            checkbox_width=15, checkbox_height=15, corner_radius=4,
             border_width=2, fg_color=COLOR_ACCENT, command=self._on_check_toggle
         )
-        self.chk.pack(side="left", padx=(10, 6))
+        self.chk.pack(side="left", padx=(8, 6))
 
         self.folder_lbl = ctk.CTkLabel(
-            self, text="", width=148, anchor="w",
+            self, text="", width=148, height=20, anchor="w",
             font=ui_font(12, "bold"), text_color=COLOR_TEXT_MAIN
         )
         self.folder_lbl.pack(side="left", padx=(0, 6))
 
         self.del_btn = ctk.CTkButton(
-            self, text="×", width=24, height=22, corner_radius=4,
+            self, text="×", width=22, height=20, corner_radius=4,
             fg_color="transparent", hover_color="#7f1d1d", text_color=COLOR_TEXT_MUTED,
-            font=ui_font(13, "bold"), command=lambda: self.on_delete_cb(self)
+            font=ui_font(12, "bold"), command=lambda: self.on_delete_cb(self)
         )
         self.del_btn.pack(side="right", padx=6)
 
         self.summary_lbl = ctk.CTkLabel(
-            self, text="", anchor="w",
+            self, text="", height=20, anchor="w",
             font=ui_font(11), text_color=COLOR_TEXT_SUB
         )
         self.summary_lbl.pack(side="left", fill="x", expand=True, padx=4)
@@ -1067,16 +1067,21 @@ class PhotoDeliveryApp(BaseWindowClass):
         super().__init__()
         self.title("Instant Delivery & SNS Studio  —  v4.3")
 
-        # 画面解像度を取得し、起動サイズが画面を超えないようにクランプ
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        init_w = min(1440, screen_w - 40) if screen_w > 1024 else screen_w
-        init_h = min(880, screen_h - 60) if screen_h > 700 else screen_h
+        try:
+            win_scaling = float(self._get_window_scaling())
+            if win_scaling <= 0:
+                win_scaling = 1.0
+        except Exception:
+            win_scaling = 1.0
+
+        screen_w = max(800, int(self.winfo_screenwidth() / win_scaling))
+        screen_h = max(600, int(self.winfo_screenheight() / win_scaling))
+        init_w = min(1440, screen_w - 24) if screen_w > 1000 else screen_w
+        init_h = min(880, screen_h - 68) if screen_h > 640 else max(560, screen_h - 40)
         self.geometry(f"{init_w}x{init_h}")
 
-        # 最小サイズを 1024x640 程度に緩和しつつ画面サイズを超えないようにする
-        min_w = min(1024, screen_w)
-        min_h = min(640, screen_h)
+        min_w = min(980, screen_w)
+        min_h = min(560, screen_h - 48)
         self.minsize(min_w, min_h)
         self.configure(fg_color=COLOR_BG)
 
@@ -1106,17 +1111,17 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.schedule_preview_update()
 
     def _build_ui(self):
-        top_bar = ctk.CTkFrame(self, height=40, fg_color=COLOR_SURFACE, corner_radius=0)
-        top_bar.pack(fill="x", padx=0, pady=(0, 8))
+        top_bar = ctk.CTkFrame(self, height=36, fg_color=COLOR_SURFACE, corner_radius=0)
+        top_bar.pack(fill="x", padx=0, pady=(0, 6))
         top_bar.pack_propagate(False)
 
         ctk.CTkLabel(
-            top_bar, text="INSTANT DELIVERY & SNS STUDIO",
+            top_bar, text="INSTANT DELIVERY & SNS STUDIO", height=24,
             font=ui_font(13, "bold"), text_color=COLOR_TEXT_MAIN
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.3", font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.3", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
@@ -1132,13 +1137,13 @@ class PhotoDeliveryApp(BaseWindowClass):
             ("専用fontsフォルダ", lambda: open_folder(str(LOCAL_FONTS_DIR)))
         ]:
             ctk.CTkButton(
-                top_bar, text=label, width=108, height=26, corner_radius=4,
+                top_bar, text=label, width=108, height=24, corner_radius=4,
                 fg_color=COLOR_INPUT, hover_color=COLOR_INPUT_HOVER,
                 font=ui_font(11), command=cmd
             ).pack(side="right", padx=3)
 
         main_body = ctk.CTkFrame(self, fg_color="transparent")
-        main_body.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+        main_body.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
         self.left_pane = ctk.CTkFrame(main_body, width=580, fg_color="transparent")
         self.left_pane.pack(side="left", fill="y", expand=False, padx=(0, 10))
@@ -1164,14 +1169,14 @@ class PhotoDeliveryApp(BaseWindowClass):
 
     def _build_left_pane(self):
         sec1 = ctk.CTkFrame(self.left_pane, fg_color=COLOR_SURFACE, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
-        sec1.pack(fill="x", pady=(0, 8))
+        sec1.pack(fill="x", pady=(0, 6))
 
         r_dnd = ctk.CTkFrame(sec1, fg_color="transparent")
-        r_dnd.pack(fill="x", padx=10, pady=(8, 6))
+        r_dnd.pack(fill="x", padx=10, pady=(6, 4))
 
         dnd_text = "フォルダまたは画像をここにドロップ" if DND_AVAILABLE else "右のボタンから写真を選択"
         self.drop_label = ctk.CTkLabel(
-            r_dnd, text=dnd_text, height=32, fg_color=COLOR_BG, corner_radius=4,
+            r_dnd, text=dnd_text, height=28, fg_color=COLOR_BG, corner_radius=4,
             font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB
         )
         self.drop_label.pack(side="left", fill="x", expand=True, padx=(0, 6))
@@ -1181,65 +1186,66 @@ class PhotoDeliveryApp(BaseWindowClass):
             self.drop_label.dnd_bind("<<Drop>>", self._on_drop_files)
 
         ctk.CTkButton(
-            r_dnd, text="フォルダ選択", width=92, height=30, corner_radius=4,
+            r_dnd, text="フォルダ選択", width=92, height=28, corner_radius=4,
             fg_color=COLOR_PRIMARY_BTN, hover_color=COLOR_PRIMARY_HOVER, font=ui_font(11, "bold"),
             command=self.select_folder
         ).pack(side="left", padx=2)
         ctk.CTkButton(
-            r_dnd, text="画像選択", width=74, height=30, corner_radius=4,
+            r_dnd, text="画像選択", width=74, height=28, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color=COLOR_INPUT_HOVER, font=ui_font(11),
             command=self.select_files
         ).pack(side="left", padx=(2, 0))
 
         r_opt = ctk.CTkFrame(sec1, fg_color="transparent")
-        r_opt.pack(fill="x", padx=10, pady=(0, 8))
+        r_opt.pack(fill="x", padx=10, pady=(0, 6))
 
-        ctk.CTkLabel(r_opt, text="イベント名", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(r_opt, text="イベント名", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
         self.event_name_entry = ctk.CTkEntry(
-            r_opt, width=140, height=26, corner_radius=4,
+            r_opt, width=140, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
         )
         self.event_name_entry.insert(0, f"{datetime.now().strftime('%Y%m%d')}_Event")
         self.event_name_entry.pack(side="left", padx=(0, 10))
 
-        ctk.CTkLabel(r_opt, text="順序", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(r_opt, text="順序", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
         self.sort_mode_cb = self._make_dropdown(
             r_opt, ["EXIF撮影日時順(ズレ補正対応)", "元のファイル名順", "リネームしない(元名維持)"], width=175
         )
+        self.sort_mode_cb.configure(height=24)
         self.sort_mode_cb.pack(side="left", padx=(0, 10))
 
         self.zip_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
-            r_opt, text="ZIP化", variable=self.zip_var, width=58,
+            r_opt, text="ZIP化", variable=self.zip_var, width=58, height=22,
             checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11)
         ).pack(side="left", padx=2)
 
         self.sync_time_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
-            r_opt, text="時刻同期", variable=self.sync_time_var, width=68,
+            r_opt, text="時刻同期", variable=self.sync_time_var, width=68, height=22,
             checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11)
         ).pack(side="left", padx=2)
 
         sec2 = ctk.CTkFrame(self.left_pane, fg_color=COLOR_SURFACE, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
-        sec2.pack(fill="x", pady=(0, 8))
+        sec2.pack(fill="x", pady=(0, 6))
 
         l_head = ctk.CTkFrame(sec2, fg_color="transparent")
-        l_head.pack(fill="x", padx=10, pady=(7, 3))
+        l_head.pack(fill="x", padx=10, pady=(5, 2))
         ctk.CTkLabel(
-            l_head, text="同時書き出しパターン", font=ui_font(12, "bold"), text_color=COLOR_TEXT_MAIN
+            l_head, text="同時書き出しパターン", height=20, font=ui_font(12, "bold"), text_color=COLOR_TEXT_MAIN
         ).pack(side="left")
         ctk.CTkLabel(
-            l_head, text="（行をクリックして編集）", font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            l_head, text="（行をクリックして編集）", height=20, font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left", padx=4)
 
         self.add_pat_btn = ctk.CTkButton(
-            l_head, text="+ 追加", width=68, height=22, corner_radius=4,
+            l_head, text="+ 追加", width=68, height=20, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11, "bold"),
             command=self.add_empty_pattern
         )
         self.add_pat_btn.pack(side="right")
 
-        self.list_scroll = ctk.CTkScrollableFrame(sec2, height=120, fg_color="transparent")
+        self.list_scroll = ctk.CTkScrollableFrame(sec2, height=84, fg_color="transparent")
         self.list_scroll.pack(fill="x", padx=4, pady=(0, 4))
 
         self.inspector_tabs = ctk.CTkTabview(
@@ -1262,11 +1268,11 @@ class PhotoDeliveryApp(BaseWindowClass):
 
     def _build_pattern_inspector_tab(self, parent):
         head_row = ctk.CTkFrame(parent, fg_color="transparent")
-        head_row.pack(fill="x", padx=8, pady=(2, 6))
+        head_row.pack(fill="x", padx=8, pady=(0, 3))
 
-        ctk.CTkLabel(head_row, text="編集中:", font=ui_font(11), text_color=COLOR_TEXT_MUTED).pack(side="left")
+        ctk.CTkLabel(head_row, text="編集中:", height=18, font=ui_font(11), text_color=COLOR_TEXT_MUTED).pack(side="left")
         self.editing_title_lbl = ctk.CTkLabel(
-            head_row, text="-", font=ui_font(12, "bold"), text_color=COLOR_ACCENT
+            head_row, text="-", height=18, font=ui_font(12, "bold"), text_color=COLOR_ACCENT
         )
         self.editing_title_lbl.pack(side="left", padx=6)
 
@@ -1278,25 +1284,27 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         def make_cell(r, c, label_txt):
             cell = ctk.CTkFrame(grid_card, fg_color="transparent")
-            cell.grid(row=r, column=c, sticky="ew", padx=8, pady=6)
-            ctk.CTkLabel(cell, text=label_txt, font=ui_font(11), text_color=COLOR_TEXT_SUB, anchor="w").pack(fill="x", pady=(0, 2))
+            cell.grid(row=r, column=c, sticky="ew", padx=8, pady=3)
+            ctk.CTkLabel(cell, text=label_txt, height=16, font=ui_font(11), text_color=COLOR_TEXT_SUB, anchor="w").pack(fill="x", pady=(0, 1))
             return cell
 
         c00 = make_cell(0, 0, "出力フォルダ名")
         self.insp_folder_entry = ctk.CTkEntry(
-            c00, height=26, corner_radius=4, fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
+            c00, height=24, corner_radius=4, fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
         )
         self.insp_folder_entry.pack(fill="x")
         self.insp_folder_entry.bind("<KeyRelease>", lambda e: self._on_inspector_changed())
 
         c01 = make_cell(0, 1, "アスペクト比")
         self.insp_aspect_cb = self._make_dropdown(c01, ["元比率", "1:1", "4:5", "9:16"], command=lambda _: self._on_inspector_changed())
+        self.insp_aspect_cb.configure(height=24)
         self.insp_aspect_cb.pack(fill="x")
 
         c02 = make_cell(0, 2, "出力解像度 (長辺)")
         self.insp_res_cb = self._make_dropdown(
             c02, ["オリジナル", "4096px", "3000px", "2160px", "1440px", "1080px"], command=lambda _: self._on_inspector_changed()
         )
+        self.insp_res_cb.configure(height=24)
         self.insp_res_cb.pack(fill="x")
 
         c10 = make_cell(1, 0, "枠・背景スタイル")
@@ -1304,42 +1312,47 @@ class PhotoDeliveryApp(BaseWindowClass):
             c10, ["枠なし", "白枠", "黒枠", "ブラー(明・すりガラス)", "ブラー(標準・そのまま)", "ブラー(暗・シネマ風)"],
             command=lambda _: self._on_inspector_changed()
         )
+        self.insp_frame_cb.configure(height=24)
         self.insp_frame_cb.pack(fill="x")
 
         c11 = make_cell(1, 1, "四方余白 (マット幅)")
         self.insp_pad_cb = self._make_dropdown(
             c11, ["なし(0%)", "小(4%)", "中(7.5%)", "大(12.5%)"], command=lambda _: self._on_inspector_changed()
         )
+        self.insp_pad_cb.configure(height=24)
         self.insp_pad_cb.pack(fill="x")
 
         c12 = make_cell(1, 2, "ロゴ(WM)の配置")
         self.insp_wm_cb = self._make_dropdown(
             c12, ["WMなし", "写真の内側", "枠の外側"], command=lambda _: self._on_inspector_changed()
         )
+        self.insp_wm_cb.configure(height=24)
         self.insp_wm_cb.pack(fill="x")
 
         c20 = make_cell(2, 0, "枠外EXIF文字レイアウト")
         self.insp_exif_print_cb = self._make_dropdown(
             c20, ["印字なし", "センター2段", "左右スプリット"], command=lambda _: self._on_inspector_changed()
         )
+        self.insp_exif_print_cb.configure(height=24)
         self.insp_exif_print_cb.pack(fill="x")
 
         c21 = make_cell(2, 1, "EXIFメタデータ保存")
         self.insp_exif_mode_cb = self._make_dropdown(
             c21, ["①納品最適(日時のみ)", "②カメラ維持", "③完全維持", "④全削除"], command=lambda _: self._on_inspector_changed()
         )
+        self.insp_exif_mode_cb.configure(height=24)
         self.insp_exif_mode_cb.pack(fill="x")
 
         blur_card = ctk.CTkFrame(parent, fg_color=COLOR_ELEVATED, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
-        blur_card.pack(fill="x", padx=6, pady=(8, 2))
+        blur_card.pack(fill="x", padx=6, pady=(5, 2))
 
         ctk.CTkLabel(
-            blur_card, text="背景ブラー微調整 （枠・背景で『ブラー』選択時に有効）",
+            blur_card, text="背景ブラー微調整 （枠・背景で『ブラー』選択時に有効）", height=16,
             font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB
-        ).pack(anchor="w", padx=10, pady=(6, 2))
+        ).pack(anchor="w", padx=10, pady=(4, 1))
 
         b_row = ctk.CTkFrame(blur_card, fg_color="transparent")
-        b_row.pack(fill="x", padx=10, pady=(2, 8))
+        b_row.pack(fill="x", padx=10, pady=(1, 5))
 
         self.insp_blur_bright_slider = SliderEntryWidget(
             b_row, "明るさ(%)", min_val=-50.0, max_val=50.0, default_val=0.0,
@@ -1355,24 +1368,25 @@ class PhotoDeliveryApp(BaseWindowClass):
 
     def _build_wm_tab(self, parent):
         slot_bar = ctk.CTkFrame(parent, fg_color="transparent")
-        slot_bar.pack(fill="x", padx=6, pady=(2, 6))
+        slot_bar.pack(fill="x", padx=6, pady=(1, 4))
 
-        ctk.CTkLabel(slot_bar, text="編集スロット", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 8))
+        ctk.CTkLabel(slot_bar, text="編集スロット", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 8))
 
         self.slot_selector = self._make_dropdown(
             slot_bar, values=["Slot 1"], width=110, command=self._switch_wm_slot_view
         )
+        self.slot_selector.configure(height=24)
         self.slot_selector.set("Slot 1")
         self.slot_selector.pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
-            slot_bar, text="+ 追加", width=54, height=26, corner_radius=4,
+            slot_bar, text="+ 追加", width=54, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11, "bold"),
             command=self._add_wm_slot
         ).pack(side="left", padx=2)
 
         ctk.CTkButton(
-            slot_bar, text="削除", width=50, height=26, corner_radius=4,
+            slot_bar, text="削除", width=50, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color="#7f1d1d", font=ui_font(11),
             command=self._remove_current_wm_slot
         ).pack(side="left", padx=2)
@@ -1387,7 +1401,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             {"enabled": False, "mode": "PNG", "text": "", "pos": "左上", "size": 10.0, "margin": 2.5, "opacity": 90.0, "tracking": 8.0, "shadow": "なし"},
         ]
 
-        for idx, d in enumerate(defaults):
+        for d in defaults:
             self._create_wm_slot(d)
 
         self._refresh_wm_slot_labels()
@@ -1399,41 +1413,44 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.wm_slot_frames.append(slot_frame)
 
         r1 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-        r1.pack(fill="x", padx=10, pady=(10, 4))
+        r1.pack(fill="x", padx=10, pady=(6, 3))
 
         en_var = ctk.BooleanVar(value=d.get("enabled", False))
         chk = ctk.CTkCheckBox(
-            r1, text=f"Slot {idx+1} を有効化", variable=en_var,
+            r1, text=f"Slot {idx+1} を有効化", variable=en_var, height=22,
             checkbox_width=16, checkbox_height=16, corner_radius=4,
             font=ui_font(12, "bold"), command=self.schedule_preview_update
         )
         chk.pack(side="left", padx=(0, 12))
 
-        ctk.CTkLabel(r1, text="方式", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
+        ctk.CTkLabel(r1, text="方式", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
         mode_cb = self._make_dropdown(r1, ["PNG", "テキスト(フォント)"], width=125)
+        mode_cb.configure(height=24)
         mode_cb.set(d.get("mode", "PNG"))
         mode_cb.pack(side="left", padx=(0, 10))
 
-        ctk.CTkLabel(r1, text="位置", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
+        ctk.CTkLabel(r1, text="位置", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
         pos_cb = self._make_dropdown(r1, ["右下", "左下", "右上", "左上"], width=72, command=lambda _: self.schedule_preview_update())
+        pos_cb.configure(height=24)
         pos_cb.set(d.get("position", d.get("pos", "右下")))
         pos_cb.pack(side="left", padx=(0, 10))
 
-        ctk.CTkLabel(r1, text="影", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
+        ctk.CTkLabel(r1, text="影", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(4, 4))
         sh_cb = self._make_dropdown(r1, ["なし", "弱", "中", "強"], width=68, command=lambda _: self.schedule_preview_update())
+        sh_cb.configure(height=24)
         sh_cb.set(d.get("shadow", "弱"))
         sh_cb.pack(side="left")
 
         r2 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-        r2.pack(fill="x", padx=10, pady=6)
+        r2.pack(fill="x", padx=10, pady=3)
 
         path_entry = ctk.CTkEntry(
-            r2, width=180, height=26, corner_radius=4, fg_color=COLOR_INPUT,
+            r2, width=180, height=24, corner_radius=4, fg_color=COLOR_INPUT,
             border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="フォント / PNGパス"
         )
         path_entry.insert(0, d.get("path", d.get("font_path", "")))
         pick_btn = ctk.CTkButton(
-            r2, text="フォント選択", width=96, height=26, corner_radius=4,
+            r2, text="フォント選択", width=96, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11)
         )
 
@@ -1459,9 +1476,9 @@ class PhotoDeliveryApp(BaseWindowClass):
         path_entry.pack(side="left", padx=(0, 10))
         path_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
 
-        ctk.CTkLabel(r2, text="文字", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 4))
+        ctk.CTkLabel(r2, text="文字", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 4))
         txt_entry = ctk.CTkEntry(
-            r2, height=26, corner_radius=4, fg_color=COLOR_INPUT,
+            r2, height=24, corner_radius=4, fg_color=COLOR_INPUT,
             border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="Photo by ..."
         )
         txt_entry.insert(0, d.get("text", ""))
@@ -1469,7 +1486,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         txt_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
 
         g_row1 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-        g_row1.pack(fill="x", padx=10, pady=(8, 4))
+        g_row1.pack(fill="x", padx=10, pady=(4, 2))
 
         size_slider = SliderEntryWidget(
             g_row1, "サイズ(%)", min_val=1.0, max_val=40.0, default_val=float(d.get("size_pct", d.get("size", 12.0))),
@@ -1484,7 +1501,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         margin_slider.pack(side="left", fill="x", expand=True)
 
         g_row2 = ctk.CTkFrame(slot_frame, fg_color="transparent")
-        g_row2.pack(fill="x", padx=10, pady=(4, 8))
+        g_row2.pack(fill="x", padx=10, pady=(2, 6))
 
         opacity_slider = SliderEntryWidget(
             g_row2, "不透明度(%)", min_val=10.0, max_val=100.0, default_val=float(d.get("opacity_pct", 90.0)),
@@ -1567,9 +1584,9 @@ class PhotoDeliveryApp(BaseWindowClass):
         box.pack(fill="both", expand=True, padx=6, pady=2)
 
         row1 = ctk.CTkFrame(box, fg_color="transparent")
-        row1.pack(fill="x", padx=10, pady=(10, 6))
+        row1.pack(fill="x", padx=10, pady=(6, 4))
 
-        ctk.CTkLabel(row1, text="印字項目", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(row1, text="印字項目", height=22, font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 8))
         self.cap_cam_var = ctk.BooleanVar(value=True)
         self.cap_lens_var = ctk.BooleanVar(value=True)
         self.cap_focal_var = ctk.BooleanVar(value=False)
@@ -1584,38 +1601,38 @@ class PhotoDeliveryApp(BaseWindowClass):
             ("SS", self.cap_ss_var), ("ISO", self.cap_iso_var), ("日付", self.cap_date_var)
         ]:
             ctk.CTkCheckBox(
-                row1, text=label, variable=var, width=56,
+                row1, text=label, variable=var, width=56, height=22,
                 checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11),
                 command=self.schedule_preview_update
             ).pack(side="left", padx=3)
 
         row2 = ctk.CTkFrame(box, fg_color="transparent")
-        row2.pack(fill="x", padx=10, pady=6)
+        row2.pack(fill="x", padx=10, pady=4)
 
-        ctk.CTkLabel(row2, text="自由追記", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(row2, text="自由追記", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
         self.cap_custom_entry = ctk.CTkEntry(
-            row2, width=155, height=26, corner_radius=4, fg_color=COLOR_INPUT,
+            row2, width=155, height=24, corner_radius=4, fg_color=COLOR_INPUT,
             border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="例: Kodak Tri-X 400"
         )
         self.cap_custom_entry.pack(side="left", padx=(0, 10))
         self.cap_custom_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
 
-        ctk.CTkLabel(row2, text="書体", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(row2, text="書体", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
         self.cap_font_entry = ctk.CTkEntry(
-            row2, height=26, corner_radius=4, fg_color=COLOR_INPUT,
+            row2, height=24, corner_radius=4, fg_color=COLOR_INPUT,
             border_width=1, border_color=COLOR_BORDER, font=ui_font(11), placeholder_text="システム標準欧文"
         )
         self.cap_font_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self.cap_font_entry.bind("<KeyRelease>", lambda e: self.schedule_preview_update())
 
         ctk.CTkButton(
-            row2, text="フォント選択", width=96, height=26, corner_radius=4,
+            row2, text="フォント選択", width=96, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11),
             command=lambda: FontPickerDialog(self, self.cap_font_entry, on_change_callback=self.schedule_preview_update)
         ).pack(side="left")
 
         row_sliders = ctk.CTkFrame(box, fg_color="transparent")
-        row_sliders.pack(fill="x", padx=10, pady=6)
+        row_sliders.pack(fill="x", padx=10, pady=4)
 
         self.cap_font_scale_slider = SliderEntryWidget(
             row_sliders, "文字倍率(%)", min_val=50.0, max_val=200.0, default_val=100.0,
@@ -1630,10 +1647,10 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.cap_bottom_space_slider.pack(side="left", fill="x", expand=True)
 
         row3 = ctk.CTkFrame(box, fg_color="transparent")
-        row3.pack(fill="x", padx=10, pady=(4, 10))
-        ctk.CTkLabel(row3, text="表記置換", font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 6))
+        row3.pack(fill="x", padx=10, pady=(4, 6))
+        ctk.CTkLabel(row3, text="表記置換", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 6))
         self.cap_replace_entry = ctk.CTkEntry(
-            row3, height=26, corner_radius=4, fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
+            row3, height=24, corner_radius=4, fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
         )
         self.cap_replace_entry.insert(0, "OLYMPUS IMAGING CORP.=OLYMPUS")
         self.cap_replace_entry.pack(side="left", fill="x", expand=True)
@@ -1667,16 +1684,16 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.copyright_entry.pack(fill="x")
 
     def _build_right_preview_pane(self):
-        p_head = ctk.CTkFrame(self.right_pane, height=40, fg_color="transparent")
-        p_head.pack(fill="x", padx=12, pady=(8, 4))
+        p_head = ctk.CTkFrame(self.right_pane, height=34, fg_color="transparent")
+        p_head.pack(fill="x", padx=12, pady=(6, 2))
         p_head.pack_propagate(False)
 
         ctk.CTkLabel(
-            p_head, text="PREVIEW", font=ui_font(12, "bold"), text_color=COLOR_TEXT_SUB
+            p_head, text="PREVIEW", height=24, font=ui_font(12, "bold"), text_color=COLOR_TEXT_SUB
         ).pack(side="left")
 
         self.active_pattern_label = ctk.CTkLabel(
-            p_head, text="", width=220, anchor="w", font=ui_font(12, "bold"), text_color=COLOR_TEXT_MAIN
+            p_head, text="", width=220, height=24, anchor="w", font=ui_font(12, "bold"), text_color=COLOR_TEXT_MAIN
         )
         self.active_pattern_label.pack(side="left", padx=10)
 
@@ -1707,10 +1724,10 @@ class PhotoDeliveryApp(BaseWindowClass):
             cell.grid(row=r_idx, column=c_idx, padx=4, pady=4)
             cell.pack_propagate(False)
 
-            title_l = ctk.CTkLabel(cell, text="", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
+            title_l = ctk.CTkLabel(cell, text="", height=18, font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
             title_l.pack(fill="x", pady=(4, 2), padx=4)
             img_l = ctk.CTkLabel(cell, text="")
-            img_l.pack(expand=True, pady=2)
+            img_l.pack(expand=True, pady=(0, 4))
 
             self.grid_cells.append({"frame": cell, "title": title_l, "img": img_l})
 
@@ -1718,20 +1735,20 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.dual_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
 
         self.land_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
-        self.land_card.pack(expand=True, pady=(4, 2))
+        self.land_card.pack(expand=True, pady=(2, 3))
         self.land_card.pack_propagate(False)
-        self.land_title = ctk.CTkLabel(self.land_card, text="LANDSCAPE", anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
-        self.land_title.pack(fill="x", pady=(4, 0), padx=6)
+        self.land_title = ctk.CTkLabel(self.land_card, text="LANDSCAPE", height=18, anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
+        self.land_title.pack(fill="x", pady=(4, 2), padx=6)
         self.land_img_lbl = ctk.CTkLabel(self.land_card, text="")
-        self.land_img_lbl.pack(expand=True, pady=2)
+        self.land_img_lbl.pack(expand=True, pady=(0, 4))
 
         self.port_card = ctk.CTkFrame(self.dual_stage, fg_color=COLOR_SURFACE, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
-        self.port_card.pack(expand=True, pady=(2, 4))
+        self.port_card.pack(expand=True, pady=(3, 2))
         self.port_card.pack_propagate(False)
-        self.port_title = ctk.CTkLabel(self.port_card, text="PORTRAIT", anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
-        self.port_title.pack(fill="x", pady=(4, 0), padx=6)
+        self.port_title = ctk.CTkLabel(self.port_card, text="PORTRAIT", height=18, anchor="center", font=ui_font(11), text_color=COLOR_TEXT_SUB)
+        self.port_title.pack(fill="x", pady=(4, 2), padx=6)
         self.port_img_lbl = ctk.CTkLabel(self.port_card, text="")
-        self.port_img_lbl.pack(expand=True, pady=2)
+        self.port_img_lbl.pack(expand=True, pady=(0, 4))
 
         # --- モード3: 1枚拡大表示 ---
         self.single_stage = ctk.CTkFrame(self.preview_stage, fg_color="transparent")
@@ -1739,45 +1756,45 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.single_card = ctk.CTkFrame(self.single_stage, fg_color=COLOR_SURFACE, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
         self.single_card.pack(expand=True, pady=4)
         self.single_card.pack_propagate(False)
-        self.single_title = ctk.CTkLabel(self.single_card, text="", anchor="center", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
-        self.single_title.pack(fill="x", pady=(6, 2), padx=8)
+        self.single_title = ctk.CTkLabel(self.single_card, text="", height=20, anchor="center", font=ui_font(11, "bold"), text_color=COLOR_TEXT_SUB)
+        self.single_title.pack(fill="x", pady=(5, 2), padx=8)
         self.single_img_lbl = ctk.CTkLabel(self.single_card, text="")
-        self.single_img_lbl.pack(expand=True, pady=4)
+        self.single_img_lbl.pack(expand=True, pady=(0, 5))
 
-        footer_bar = ctk.CTkFrame(self.right_pane, height=52, fg_color="transparent")
-        footer_bar.pack(fill="x", padx=12, pady=(4, 10))
+        footer_bar = ctk.CTkFrame(self.right_pane, height=46, fg_color="transparent")
+        footer_bar.pack(fill="x", padx=12, pady=(2, 8))
         footer_bar.pack_propagate(False)
 
         nav_box = ctk.CTkFrame(footer_bar, fg_color=COLOR_BG, corner_radius=5, border_width=1, border_color=COLOR_BORDER)
-        nav_box.pack(side="left", fill="y", pady=4)
+        nav_box.pack(side="left", fill="y", pady=3)
 
         ctk.CTkButton(
-            nav_box, text="‹ 前へ", width=60, height=26, corner_radius=4,
+            nav_box, text="‹ 前へ", width=58, height=24, corner_radius=4,
             fg_color="transparent", hover_color=COLOR_INPUT, font=ui_font(11), command=self._prev_photo
-        ).pack(side="left", padx=4, pady=4)
+        ).pack(side="left", padx=4, pady=3)
 
-        self.photo_counter_lbl = ctk.CTkLabel(nav_box, text="Sample", width=155, font=ui_font(11), text_color=COLOR_TEXT_SUB)
+        self.photo_counter_lbl = ctk.CTkLabel(nav_box, text="Sample", width=145, height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB)
         self.photo_counter_lbl.pack(side="left", padx=4)
 
         ctk.CTkButton(
-            nav_box, text="次へ ›", width=60, height=26, corner_radius=4,
+            nav_box, text="次へ ›", width=58, height=24, corner_radius=4,
             fg_color="transparent", hover_color=COLOR_INPUT, font=ui_font(11), command=self._next_photo
-        ).pack(side="left", padx=4, pady=4)
+        ).pack(side="left", padx=4, pady=3)
 
         prog_box = ctk.CTkFrame(footer_bar, fg_color="transparent")
-        prog_box.pack(side="left", fill="x", expand=True, padx=14, pady=6)
-        self.status_label = ctk.CTkLabel(prog_box, text="Ready (Auto-save enabled)", anchor="w", font=ui_font(11), text_color=COLOR_TEXT_SUB)
+        prog_box.pack(side="left", fill="x", expand=True, padx=12, pady=4)
+        self.status_label = ctk.CTkLabel(prog_box, text="Ready (Auto-save enabled)", height=18, anchor="w", font=ui_font(11), text_color=COLOR_TEXT_SUB)
         self.status_label.pack(fill="x")
         self.progress_bar = ctk.CTkProgressBar(prog_box, height=6, corner_radius=3, fg_color=COLOR_BG, progress_color=COLOR_ACCENT)
         self.progress_bar.pack(fill="x", pady=(4, 0))
         self.progress_bar.set(0)
 
         self.run_btn = ctk.CTkButton(
-            footer_bar, text="全パターン一括書き出し", width=190, height=38, corner_radius=5,
+            footer_bar, text="全パターン一括書き出し", width=216, height=36, corner_radius=5,
             fg_color=COLOR_PRIMARY_BTN, hover_color=COLOR_PRIMARY_HOVER,
-            font=ui_font(13, "bold"), command=self.start_batch_export
+            font=ui_font(12, "bold"), command=self.start_batch_export
         )
-        self.run_btn.pack(side="right", pady=4)
+        self.run_btn.pack(side="right", pady=3)
 
     def _on_preview_stage_configure(self, event):
         if event.widget is not self.preview_stage:
@@ -1966,6 +1983,23 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         return land_im, land_meta, land_name, port_im, port_meta, port_name
 
+    def _get_stage_scaling(self) -> float:
+        """CTkFrameウィジェット側のDPI拡大率を優先取得し、論理ピクセル変換の失敗を防ぐ"""
+        for obj, attr in (
+            (self.preview_stage, "_get_widget_scaling"),
+            (self, "_get_widget_scaling"),
+            (self, "_get_window_scaling"),
+        ):
+            fn = getattr(obj, attr, None)
+            if callable(fn):
+                try:
+                    val = float(fn())
+                    if val > 0:
+                        return val
+                except Exception:
+                    continue
+        return 1.0
+
     def _render_live_preview_now(self):
         self.preview_debounce_id = None
         if not self.selected_item:
@@ -1987,33 +2021,30 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         raw_w = self.preview_stage.winfo_width()
         raw_h = self.preview_stage.winfo_height()
-        try:
-            scaling = float(self._get_widget_scaling())
-            if scaling <= 0:
-                scaling = 1.0
-        except Exception:
-            scaling = 1.0
+        if raw_w <= 10 or raw_h <= 10:
+            self.update_idletasks()
+            raw_w = self.preview_stage.winfo_width()
+            raw_h = self.preview_stage.winfo_height()
+
+        scaling = self._get_stage_scaling()
         logical_w = int(raw_w / scaling)
         logical_h = int(raw_h / scaling)
-        stage_w = logical_w if logical_w > 10 else 820
-        stage_h = logical_h if logical_h > 10 else 660
-
-        inner_w = max(240, stage_w - 12)
-        inner_h = max(240, stage_h - 12)
+        stage_w = logical_w if logical_w > 50 else 640
+        stage_h = logical_h if logical_h > 50 else 460
 
         if mode == "全パターン比較":
             self.grid_stage.pack(fill="both", expand=True, padx=4, pady=4)
 
-            max_cell_w = max(160, (inner_w - 16) // 2)
-            max_cell_h = max(130, (inner_h - 16) // 2)
-            avail_img_w = max(120, max_cell_w - 12)
-            avail_img_h = max(95, max_cell_h - 32)
+            max_cell_w = max(130, (stage_w - 28) // 2)
+            max_cell_h = max(105, (stage_h - 28) // 2)
+            avail_img_w = max(100, max_cell_w - 12)
+            avail_img_h = max(75, max_cell_h - 30)
 
             scale = min(1.0, avail_img_w / 350.0, avail_img_h / 275.0)
-            img_w = max(120, int(350 * scale))
-            img_h = max(95, int(275 * scale))
+            img_w = max(100, int(350 * scale))
+            img_h = max(75, int(275 * scale))
             cell_frame_w = img_w + 12
-            cell_frame_h = img_h + 32
+            cell_frame_h = img_h + 30
             max_edge = min(560, max(320, int(560 * scale)))
 
             for idx, cell in enumerate(self.grid_cells):
@@ -2051,16 +2082,16 @@ class PhotoDeliveryApp(BaseWindowClass):
             pattern = self.selected_item.data
             land_im, land_meta, land_name, port_im, port_meta, port_name = self._get_dual_orientation_sources()
 
-            max_card_w = max(220, inner_w - 8)
-            max_card_h = max(130, (inner_h - 12) // 2)
-            avail_img_w = max(200, max_card_w - 12)
-            avail_img_h = max(95, max_card_h - 32)
+            max_card_w = max(180, stage_w - 20)
+            max_card_h = max(110, (stage_h - 24) // 2)
+            avail_img_w = max(160, max_card_w - 12)
+            avail_img_h = max(80, max_card_h - 30)
 
             scale = min(1.0, avail_img_w / 580.0, avail_img_h / 295.0)
-            img_w = max(200, int(580 * scale))
-            img_h = max(95, int(295 * scale))
+            img_w = max(160, int(580 * scale))
+            img_h = max(80, int(295 * scale))
             card_frame_w = img_w + 12
-            card_frame_h = img_h + 32
+            card_frame_h = img_h + 30
             max_edge = min(740, max(420, int(740 * scale)))
 
             self.land_card.configure(width=card_frame_w, height=card_frame_h)
@@ -2086,14 +2117,14 @@ class PhotoDeliveryApp(BaseWindowClass):
             self.single_stage.pack(fill="both", expand=True, padx=4, pady=4)
             pattern = self.selected_item.data
 
-            avail_img_w = max(240, inner_w - 20)
-            avail_img_h = max(200, inner_h - 46)
+            avail_img_w = max(180, stage_w - 38)
+            avail_img_h = max(140, stage_h - 56)
 
             scale = min(1.0, avail_img_w / 680.0, avail_img_h / 580.0)
-            img_w = max(240, int(680 * scale))
-            img_h = max(200, int(580 * scale))
+            img_w = max(180, int(680 * scale))
+            img_h = max(140, int(580 * scale))
             card_frame_w = img_w + 16
-            card_frame_h = img_h + 40
+            card_frame_h = img_h + 34
             max_edge = min(1000, max(520, int(1000 * scale)))
 
             self.single_card.configure(width=card_frame_w, height=card_frame_h)
