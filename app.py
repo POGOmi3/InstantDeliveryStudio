@@ -1362,29 +1362,48 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.insp_blur_strength_slider.pack(side="left", fill="x", expand=True)
 
     def _build_wm_tab(self, parent):
+        self._wm_slot_labels = []
+        self._current_wm_idx = 0
+
         slot_bar = ctk.CTkFrame(parent, fg_color="transparent")
         slot_bar.pack(fill="x", padx=6, pady=(1, 4))
 
-        ctk.CTkLabel(slot_bar, text="編集スロット", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 8))
+        bar_row1 = ctk.CTkFrame(slot_bar, fg_color="transparent")
+        bar_row1.pack(fill="x")
+
+        ctk.CTkLabel(bar_row1, text="編集スロット", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 8))
 
         self.slot_selector = self._make_dropdown(
-            slot_bar, values=["Slot 1"], width=110, command=self._switch_wm_slot_view
+            bar_row1, values=["Slot 1"], width=110, command=self._switch_wm_slot_view
         )
         self.slot_selector.configure(height=24)
         self.slot_selector.set("Slot 1")
         self.slot_selector.pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
-            slot_bar, text="+ 追加", width=54, height=24, corner_radius=4,
+            bar_row1, text="+ 追加", width=54, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color=COLOR_ACCENT, font=ui_font(11, "bold"),
             command=self._add_wm_slot
         ).pack(side="left", padx=2)
 
         ctk.CTkButton(
-            slot_bar, text="削除", width=50, height=24, corner_radius=4,
+            bar_row1, text="削除", width=50, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, hover_color="#7f1d1d", font=ui_font(11),
             command=self._remove_current_wm_slot
         ).pack(side="left", padx=2)
+
+        bar_row2 = ctk.CTkFrame(slot_bar, fg_color="transparent")
+        bar_row2.pack(fill="x", pady=(4, 0))
+
+        ctk.CTkLabel(bar_row2, text="名前", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 8))
+
+        self.wm_name_entry = ctk.CTkEntry(
+            bar_row2, height=24, corner_radius=4, fg_color=COLOR_INPUT,
+            border_width=1, border_color=COLOR_BORDER, font=ui_font(11),
+            placeholder_text="スロット名（任意・イベント名など）"
+        )
+        self.wm_name_entry.pack(side="left", fill="x", expand=True)
+        self.wm_name_entry.bind("<KeyRelease>", self._on_wm_name_edited)
 
         self.wm_panel_container = ctk.CTkFrame(parent, fg_color=COLOR_ELEVATED, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         self.wm_panel_container.pack(fill="both", expand=True, padx=6, pady=2)
@@ -1514,14 +1533,33 @@ class PhotoDeliveryApp(BaseWindowClass):
             "enabled": en_var, "mode": mode_cb, "path": path_entry, "text": txt_entry,
             "pos": pos_cb, "size": size_slider, "margin": margin_slider,
             "opacity": opacity_slider, "tracking": tracking_slider,
-            "shadow": sh_cb, "pick_btn": pick_btn, "chk_label": chk
+            "shadow": sh_cb, "pick_btn": pick_btn, "chk_label": chk,
+            "name_var": ctk.StringVar(value=str(d.get("name", "")))
         })
 
     def _refresh_wm_slot_labels(self):
-        values = [f"Slot {i+1}" for i in range(len(self.wm_slot_widgets))]
-        self.slot_selector.configure(values=values)
+        labels = []
+        seen = {}
         for i, w in enumerate(self.wm_slot_widgets):
-            w["chk_label"].configure(text=f"Slot {i+1} を有効化")
+            base = w["name_var"].get().strip() or f"Slot {i+1}"
+            if base in seen:
+                seen[base] += 1
+                labels.append(f"{base} ({seen[base]})")
+            else:
+                seen[base] = 1
+                labels.append(base)
+        self._wm_slot_labels = labels
+        self.slot_selector.configure(values=labels)
+        for i, w in enumerate(self.wm_slot_widgets):
+            w["chk_label"].configure(text=f"{labels[i]} を有効化")
+
+    def _on_wm_name_edited(self, event=None):
+        if not self.wm_slot_widgets:
+            return
+        idx = max(0, min(self._current_wm_idx, len(self.wm_slot_widgets) - 1))
+        self.wm_slot_widgets[idx]["name_var"].set(self.wm_name_entry.get())
+        self._refresh_wm_slot_labels()
+        self.slot_selector.set(self._wm_slot_labels[idx])
 
     def _add_wm_slot(self):
         if len(self.wm_slot_widgets) >= WM_SLOT_MAX:
@@ -1534,7 +1572,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         }
         self._create_wm_slot(default_dict)
         self._refresh_wm_slot_labels()
-        new_label = f"Slot {len(self.wm_slot_widgets)}"
+        new_label = self._wm_slot_labels[-1]
         self.slot_selector.set(new_label)
         self._switch_wm_slot_view(new_label)
         self.schedule_preview_update()
@@ -1544,9 +1582,9 @@ class PhotoDeliveryApp(BaseWindowClass):
             messagebox.showwarning("確認", "最低1つのウォーターマークスロットが必要です。")
             return
         cur_val = self.slot_selector.get()
-        try:
-            idx = int(cur_val.replace("Slot", "").strip()) - 1
-        except ValueError:
+        if cur_val in self._wm_slot_labels:
+            idx = self._wm_slot_labels.index(cur_val)
+        else:
             idx = len(self.wm_slot_widgets) - 1
 
         idx = max(0, min(idx, len(self.wm_slot_widgets) - 1))
@@ -1557,22 +1595,29 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         self._refresh_wm_slot_labels()
         target_idx = max(0, idx - 1)
-        target_label = f"Slot {target_idx + 1}"
+        target_label = self._wm_slot_labels[target_idx]
         self.slot_selector.set(target_label)
         self._switch_wm_slot_view(target_label)
         self.schedule_preview_update()
 
     def _switch_wm_slot_view(self, selected_label: str):
-        try:
-            idx = int(selected_label.replace("Slot", "").strip()) - 1
-        except ValueError:
+        if selected_label in self._wm_slot_labels:
+            idx = self._wm_slot_labels.index(selected_label)
+        else:
             idx = 0
         idx = max(0, min(idx, len(self.wm_slot_frames) - 1))
+        self._current_wm_idx = idx
         for i, frame in enumerate(self.wm_slot_frames):
             if i == idx:
                 frame.pack(fill="both", expand=True)
             else:
                 frame.pack_forget()
+        if hasattr(self, "wm_name_entry"):
+            self.wm_name_entry.delete(0, "end")
+            if self.wm_slot_widgets:
+                name_val = self.wm_slot_widgets[idx]["name_var"].get()
+                if name_val:
+                    self.wm_name_entry.insert(0, name_val)
 
     def _build_caption_tab(self, parent):
         box = ctk.CTkFrame(parent, fg_color=COLOR_ELEVATED, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
@@ -2206,6 +2251,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             mode_val = "PNG" if w["mode"].get() == "PNG" else "TEXT"
             configs.append({
                 "enabled": w["enabled"].get(),
+                "name": w["name_var"].get(),
                 "mode": mode_val,
                 "path": w["path"].get().strip(),
                 "font_path": w["path"].get().strip(),
@@ -2439,7 +2485,8 @@ class PhotoDeliveryApp(BaseWindowClass):
                 default_dict = {
                     "enabled": False, "mode": "PNG", "text": "", "pos": "右下",
                     "size_pct": 10.0, "margin_pct": 2.5, "opacity_pct": 90.0,
-                    "tracking": 8.0, "shadow": "弱", "path": "", "font_path": ""
+                    "tracking": 8.0, "shadow": "弱", "path": "", "font_path": "",
+                    "name": ""
                 }
                 self._create_wm_slot(default_dict)
             while len(self.wm_slot_widgets) > target_count:
@@ -2451,6 +2498,7 @@ class PhotoDeliveryApp(BaseWindowClass):
 
             for w, saved_wm in zip(self.wm_slot_widgets, saved_wm_list):
                 w["enabled"].set(saved_wm.get("enabled", False))
+                w["name_var"].set(saved_wm.get("name", ""))
                 m_str = "PNG" if saved_wm.get("mode") == "PNG" else "テキスト(フォント)"
                 w["mode"].set(m_str)
                 w["pick_btn"].configure(text="PNG参照" if m_str == "PNG" else "フォント選択")
@@ -2464,6 +2512,11 @@ class PhotoDeliveryApp(BaseWindowClass):
                 w["opacity"].set(saved_wm.get("opacity_pct", 90.0))
                 w["tracking"].set(saved_wm.get("tracking", 8.0))
                 w["shadow"].set(saved_wm.get("shadow", "弱"))
+
+            self._refresh_wm_slot_labels()
+            cur_label = self._wm_slot_labels[max(0, min(self._current_wm_idx, len(self._wm_slot_labels) - 1))]
+            self.slot_selector.set(cur_label)
+            self._switch_wm_slot_view(cur_label)
 
         cap_saved = data.get("caption_config", {})
         if cap_saved:
