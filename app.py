@@ -8,7 +8,7 @@ import subprocess
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -1110,13 +1110,13 @@ class PatternListItem(ctk.CTkFrame):
 
 
 # ==========================================
-# メインウィンドウ (v4.3.2)
+# メインウィンドウ (v4.3.3)
 # ==========================================
 
 class PhotoDeliveryApp(BaseWindowClass):
     def __init__(self):
         super().__init__()
-        self.title("Instant Delivery & SNS Studio  —  v4.3.2")
+        self.title("Instant Delivery & SNS Studio  —  v4.3.3")
 
         screen_w = max(800, int(self.winfo_screenwidth()))
         screen_h = max(600, int(self.winfo_screenheight()))
@@ -1147,6 +1147,8 @@ class PhotoDeliveryApp(BaseWindowClass):
         self._exif_cache = {}
         self._orientation_fallback_cache = {}
         self._last_stage_size = (0, 0)
+        self._export_cancel_event = threading.Event()
+        self._is_exporting = False
 
         self._build_ui()
         self.bind("<Left>", self._on_arrow_key)
@@ -1169,7 +1171,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.3.2", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.3.3", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
@@ -2412,7 +2414,118 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.progress_bar.set(prog)
         self.status_label.configure(text=text)
 
+    def _update_running_progress_ui(self, prog: float, text: str):
+        if self._export_cancel_event.is_set():
+            return
+        self._set_export_progress_ui(prog, text)
+
+    def _on_cancel_export(self):
+        if not self._is_exporting:
+            return
+        self._export_cancel_event.set()
+        self.status_label.configure(text="中止中… 処理中の分を書き切っています")
+
+    def _restore_run_btn_ui(self):
+        self._is_exporting = False
+        if self.winfo_exists():
+            self.run_btn.configure(
+                state="normal",
+                text="全パターン一括書き出し",
+                command=self.start_batch_export
+            )
+
+    def _write_export_log(
+        self,
+        delivery_root: Path,
+        start_dt: datetime,
+        end_dt: datetime,
+        elapsed: float,
+        event_base: str,
+        pattern_names: list,
+        total_count: int,
+        succeeded_filenames: list,
+        failed_list: list,
+        cancelled: bool,
+        zip_created: bool,
+    ):
+        if not delivery_root.exists():
+            return None
+        log_path = delivery_root / "_export_log.txt"
+        lines = [
+            "==================================================",
+            "Instant Delivery & SNS Studio - Export Report",
+            "==================================================",
+            f"開始日時: {start_dt.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"終了日時: {end_dt.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"所要時間: {elapsed:.2f} 秒",
+            f"イベント名: {event_base}",
+            f"出力パターン: {', '.join(pattern_names)}",
+            f"中止: {'あり' if cancelled else 'なし'}",
+            f"ZIP作成: {'あり' if zip_created else 'なし'}",
+            f"対象総数: {total_count} 枚",
+            f"成功枚数: {len(succeeded_filenames)} 枚",
+            f"失敗枚数: {len(failed_list)} 枚",
+            "",
+            f"[成功ファイル一覧 ({len(succeeded_filenames)}件)]",
+        ]
+        if succeeded_filenames:
+            lines.extend(succeeded_filenames)
+        else:
+            lines.append("(なし)")
+
+        lines.append("")
+        lines.append(f"[失敗ファイル一覧 ({len(failed_list)}件)]")
+        if failed_list:
+            for orig_name, pat_name, reason in failed_list:
+                lines.append(f"{orig_name}  [パターン: {pat_name}]  {reason}")
+        else:
+            lines.append("(なし)")
+        lines.append("")
+
+        try:
+            with open(log_path, "w", encoding="utf-8") as lf:
+                lf.write("\n".join(lines))
+            return None
+        except Exception as exc:
+            return f"{type(exc).__name__}: {exc}"
+
+    def _build_export_dialog_message(
+        self,
+        success_count: int,
+        failed_list: list,
+        cancelled: bool,
+        elapsed: float,
+        log_err: str = None,
+    ) -> str:
+        parts = []
+        if cancelled:
+            parts.append("中止しました。処理中の分まで書き出しています。ZIP は作成していません。")
+            parts.append("")
+
+        parts.append(f"成功: {success_count} 枚")
+        parts.append(f"失敗: {len(failed_list)} 枚")
+        parts.append(f"中止: {'あり' if cancelled else 'なし'}")
+        parts.append(f"所要時間: {elapsed:.1f} 秒")
+
+        if failed_list:
+            parts.append("")
+            parts.append("【失敗した写真と理由】")
+            for orig_name, pat_name, reason in failed_list[:10]:
+                parts.append(f"・{orig_name} [{pat_name}]: {reason}")
+            rest = len(failed_list) - 10
+            if rest > 0:
+                parts.append(f"ほか {rest} 件（全件は _export_log.txt を参照）")
+
+        if log_err:
+            parts.append("")
+            parts.append(f"※ 警告: _export_log.txt の書き込みに失敗しました ({log_err})")
+
+        return "\n".join(parts)
+
     def start_batch_export(self):
+        if self._is_exporting:
+            return
+
         if not self.image_files:
             messagebox.showwarning("未選択", "先に写真フォルダまたは画像ファイルを選択してください。")
             return
@@ -2428,7 +2541,13 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         self._save_state_to_file(AUTOSAVE_FILE)
 
-        self.run_btn.configure(state="disabled", text="書き出し中...")
+        self._export_cancel_event.clear()
+        self._is_exporting = True
+        self.run_btn.configure(
+            state="normal",
+            text="中止",
+            command=self._on_cancel_export
+        )
         self.progress_bar.set(0)
         wm_cfgs = self._collect_wm_configs()
         for cfg in wm_cfgs:
@@ -2463,6 +2582,8 @@ class PhotoDeliveryApp(BaseWindowClass):
         copyright_str = self.copyright_entry.get().strip()
         files_snapshot = list(self.image_files)
         exif_snapshot = dict(self._exif_cache)
+        cancel_event = self._export_cancel_event
+        write_abort_event = threading.Event()
 
         cam_offsets = {}
         for cam, (m_e, s_e) in self.camera_offset_widgets.items():
@@ -2473,8 +2594,10 @@ class PhotoDeliveryApp(BaseWindowClass):
             cam_offsets[cam] = total_sec
 
         def worker():
+            start_dt = datetime.now()
             start_t = time.time()
             delivery_root = Path(out_root) / f"{event_base}_Delivery"
+            pattern_names = [pat["folder"] for pat in active_patterns]
             try:
                 items = []
                 for p in files_snapshot:
@@ -2496,7 +2619,6 @@ class PhotoDeliveryApp(BaseWindowClass):
                 total_count = len(items)
                 digits = max(3, len(str(total_count)))
 
-                exported_filenames = []
                 used_filenames = set()
                 for idx, item in enumerate(items):
                     if sort_mode.startswith("リネームしない"):
@@ -2510,75 +2632,239 @@ class PhotoDeliveryApp(BaseWindowClass):
                         dup_n += 1
                     used_filenames.add(cand_name.lower())
                     item["out_filename"] = cand_name
-                    exported_filenames.append(cand_name)
 
                 def process_one(idx_and_item):
                     idx, item = idx_and_item
+                    if cancel_event.is_set() or write_abort_event.is_set():
+                        return ("skipped", idx, item, None)
+
                     p = item["path"]
+                    orig_name = Path(p).name
                     meta = item["meta"]
                     corr_dt = item["corrected_dt"]
                     base_filename = item["out_filename"]
+                    current_stage = "画像読込"
+                    in_write_op = False
+                    written_paths = []
+                    current_out_path = None
 
-                    with Image.open(p) as raw_im:
-                        icc = raw_im.info.get("icc_profile")
-                        base_im = ImageOps.exif_transpose(raw_im).convert("RGB")
+                    try:
+                        with Image.open(p) as raw_im:
+                            icc = raw_im.info.get("icc_profile")
+                            base_im = ImageOps.exif_transpose(raw_im).convert("RGB")
 
-                    for pat in active_patterns:
-                        out_img = render_single_pattern(base_im, meta, pat, wm_cfgs, cap_cfg)
-                        out_path = delivery_root / pat["folder"] / base_filename
-                        exif_bytes = build_filtered_exif_bytes(meta, pat["exif_mode"], corr_dt, copyright_str)
+                        for pat in active_patterns:
+                            current_stage = pat["folder"]
+                            in_write_op = False
+                            out_img = render_single_pattern(base_im, meta, pat, wm_cfgs, cap_cfg)
+                            out_path = delivery_root / pat["folder"] / base_filename
+                            exif_bytes = build_filtered_exif_bytes(meta, pat["exif_mode"], corr_dt, copyright_str)
 
-                        save_kwargs = {"quality": jpeg_q, "subsampling": 0}
-                        if icc:
-                            save_kwargs["icc_profile"] = icc
-                        if exif_bytes:
-                            save_kwargs["exif"] = exif_bytes
+                            save_kwargs = {"quality": jpeg_q, "subsampling": 0}
+                            if icc:
+                                save_kwargs["icc_profile"] = icc
+                            if exif_bytes:
+                                save_kwargs["exif"] = exif_bytes
 
-                        out_img.save(str(out_path), "JPEG", **save_kwargs)
+                            current_out_path = out_path
+                            in_write_op = True
+                            out_img.save(str(out_path), "JPEG", **save_kwargs)
+                            in_write_op = False
+                            current_out_path = None
+                            written_paths.append(out_path)
 
-                        if sync_time:
+                            if sync_time:
+                                try:
+                                    ts = corr_dt.timestamp()
+                                    os.utime(str(out_path), (ts, ts))
+                                except OSError:
+                                    pass
+
+                        return ("ok", idx, item, None)
+                    except Exception as exc:
+                        is_write_err = bool(in_write_op and isinstance(exc, OSError))
+                        for wp in written_paths:
                             try:
-                                ts = corr_dt.timestamp()
-                                os.utime(str(out_path), (ts, ts))
+                                wp.unlink(missing_ok=True)
                             except OSError:
                                 pass
+                        if current_out_path is not None:
+                            try:
+                                current_out_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                        reason = f"{type(exc).__name__}: {exc}"
+                        return ("error", idx, item, (orig_name, current_stage, reason, is_write_err))
 
-                    return idx + 1
+                max_workers = min(8, (os.cpu_count() or 4))
+                succeeded_records = []
+                failed_records = []
+                consecutive_write_errors = 0
+                write_abort_msg = None
+                cancelled = False
+                processed_count = 0
+                next_idx = 0
 
-                completed = 0
-                with ThreadPoolExecutor(max_workers=min(8, (os.cpu_count() or 4))) as ex:
-                    for _ in ex.map(process_one, enumerate(items)):
-                        completed += 1
-                        prog = completed / total_count
-                        msg = f"Processing: {completed} / {total_count}"
-                        self.after(0, self._set_export_progress_ui, prog, msg)
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    in_flight = set()
 
-                if make_zip:
+                    while next_idx < total_count and len(in_flight) < max_workers:
+                        if cancel_event.is_set():
+                            cancelled = True
+                            break
+                        fut = ex.submit(process_one, (next_idx, items[next_idx]))
+                        in_flight.add(fut)
+                        next_idx += 1
+
+                    if cancel_event.is_set() and not cancelled:
+                        cancelled = True
+
+                    if cancelled:
+                        self.after(0, lambda: self.status_label.configure(
+                            text="中止中… 処理中の分を書き切っています"
+                        ))
+
+                    while in_flight:
+                        done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+
+                        if cancel_event.is_set() and not cancelled:
+                            cancelled = True
+                            self.after(0, lambda: self.status_label.configure(
+                                text="中止中… 処理中の分を書き切っています"
+                            ))
+
+                        for fut in done:
+                            status, idx, item, err_info = fut.result()
+                            if status == "skipped":
+                                continue
+
+                            processed_count += 1
+                            if status == "ok":
+                                succeeded_records.append((idx, item))
+                                consecutive_write_errors = 0
+                            elif status == "error":
+                                orig_name, pat_name, reason, is_write_err = err_info
+                                failed_records.append((idx, orig_name, pat_name, reason))
+                                if is_write_err and write_abort_msg is None:
+                                    consecutive_write_errors += 1
+                                    if len(succeeded_records) == 0 and consecutive_write_errors >= 3:
+                                        write_abort_event.set()
+                                        write_abort_msg = (
+                                            f"保存先への書き込みエラーが冒頭から{consecutive_write_errors}件連続したため中断しました:\n"
+                                            f"{orig_name} [{pat_name}] — {reason}"
+                                        )
+                                    elif len(succeeded_records) >= 1 and consecutive_write_errors >= 10:
+                                        write_abort_event.set()
+                                        write_abort_msg = (
+                                            f"保存先への書き込みエラーが{consecutive_write_errors}件連続したため中断しました"
+                                            f"（成功済: {len(succeeded_records)}枚）:\n"
+                                            f"{orig_name} [{pat_name}] — {reason}"
+                                        )
+
+                        if not cancelled and write_abort_msg is None:
+                            prog = processed_count / max(1, total_count)
+                            msg = f"Processing: {processed_count} / {total_count}"
+                            self.after(0, self._update_running_progress_ui, prog, msg)
+
+                            while next_idx < total_count and len(in_flight) < max_workers:
+                                if cancel_event.is_set():
+                                    cancelled = True
+                                    self.after(0, lambda: self.status_label.configure(
+                                        text="中止中… 処理中の分を書き切っています"
+                                    ))
+                                    break
+                                fut = ex.submit(process_one, (next_idx, items[next_idx]))
+                                in_flight.add(fut)
+                                next_idx += 1
+
+                succeeded_records.sort(key=lambda x: x[0])
+                failed_records.sort(key=lambda x: x[0])
+
+                success_count = len(succeeded_records)
+                succeeded_filenames = [it["out_filename"] for _, it in succeeded_records]
+                failed_list = [(orig_n, pat_n, rsn) for _, orig_n, pat_n, rsn in failed_records]
+                failed_orig_filenames = [orig_n for orig_n, _, _ in failed_list]
+                export_summary = (success_count, failed_list, failed_orig_filenames)
+
+                if write_abort_msg is not None:
+                    end_dt = datetime.now()
+                    elapsed_abort = time.time() - start_t
+                    self._write_export_log(
+                        delivery_root, start_dt, end_dt, elapsed_abort,
+                        event_base, pattern_names, total_count,
+                        succeeded_filenames, failed_list, cancelled, False
+                    )
+                    raise OSError(write_abort_msg)
+
+                zip_created = False
+                if make_zip and not cancelled and succeeded_filenames:
                     self.after(0, lambda: self.status_label.configure(text="Creating ZIP archives..."))
                     for pat in active_patterns:
                         folder_path = delivery_root / pat["folder"]
                         zip_path = delivery_root / f"{pat['folder']}.zip"
                         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                            for fname in sorted(exported_filenames):
+                            for fname in sorted(succeeded_filenames):
                                 f = folder_path / fname
                                 if f.is_file():
                                     zf.write(f, arcname=fname)
+                    zip_created = True
 
+                end_dt = datetime.now()
                 elapsed = time.time() - start_t
-                done_msg = f"完了 ({total_count}枚 × {len(active_patterns)}パターン / {elapsed:.1f}s)"
+                log_err = self._write_export_log(
+                    delivery_root, start_dt, end_dt, elapsed,
+                    event_base, pattern_names, total_count,
+                    succeeded_filenames, failed_list, cancelled, zip_created
+                )
+
+                acc_success, acc_failed, _ = export_summary
+                dialog_msg = self._build_export_dialog_message(
+                    acc_success, acc_failed, cancelled, elapsed, log_err
+                )
                 target_dir_str = str(delivery_root)
-                self.after(0, lambda m=done_msg, d=target_dir_str: (
-                    self._set_export_progress_ui(1.0, m),
-                    open_folder(d)
-                ))
+
+                if cancelled:
+                    if acc_failed:
+                        done_msg = f"中止 (成功:{acc_success}枚 失敗:{len(acc_failed)}枚 / {elapsed:.1f}s)"
+                    else:
+                        done_msg = f"中止 ({acc_success}枚完了 / {elapsed:.1f}s)"
+                    dlg_title = "書き出し中止"
+                elif acc_failed:
+                    done_msg = f"完了 (成功:{acc_success}枚 失敗:{len(acc_failed)}枚 × {len(active_patterns)}パターン / {elapsed:.1f}s)"
+                    dlg_title = "書き出し完了（一部失敗あり）"
+                else:
+                    done_msg = f"完了 ({acc_success}枚 × {len(active_patterns)}パターン / {elapsed:.1f}s)"
+                    dlg_title = "書き出し完了"
+
+                has_warn = bool(acc_failed or log_err)
+
+                def _on_export_finished_ui(
+                    m=done_msg, d=target_dir_str, is_cancel=cancelled,
+                    title=dlg_title, body=dialog_msg, warn=has_warn
+                ):
+                    self._restore_run_btn_ui()
+                    if is_cancel:
+                        self.status_label.configure(text=m)
+                    else:
+                        self._set_export_progress_ui(1.0, m)
+                        open_folder(d)
+                    if warn:
+                        messagebox.showwarning(title, body)
+                    else:
+                        messagebox.showinfo(title, body)
+
+                self.after(0, _on_export_finished_ui)
             except Exception as exc:
                 err_msg = str(exc)
-                self.after(0, lambda m=err_msg: (
-                    self.status_label.configure(text=f"エラー中断: {m}"),
+
+                def _on_export_error_ui(m=err_msg):
+                    self._restore_run_btn_ui()
+                    self.status_label.configure(text=f"エラー中断: {m}")
                     messagebox.showerror("書き出しエラー", f"処理中にエラーが発生しました:\n{m}")
-                ))
+
+                self.after(0, _on_export_error_ui)
             finally:
-                self.after(0, lambda: self.run_btn.configure(state="normal", text="全パターン一括書き出し"))
+                self.after(0, self._restore_run_btn_ui)
 
         threading.Thread(target=worker, daemon=True).start()
 
