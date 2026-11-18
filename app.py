@@ -1031,15 +1031,12 @@ def generate_contact_sheets(entries, delivery_root, event_name, total_count) -> 
     CELL = 400
     LABEL_H = 36
     PHOTO_AREA_H = CELL - LABEL_H  # 364px
-    PERF_BAND_H = 44
+    PERF_BAND_H = 36
     HEADER_H = 100
     FOOTER_H = 60
+    STRIP_H = PERF_BAND_H + CELL + PERF_BAND_H  # フィルム1本分（帯＋コマ＋帯）= 472px
 
     SHEET_W = COLS * CELL  # 2400px
-    GRID_TOP = PERF_BAND_H + HEADER_H  # 144px
-    GRID_H = ROWS * CELL  # 2400px
-    GRID_BOTTOM = GRID_TOP + GRID_H  # 2544px
-    SHEET_H = GRID_BOTTOM + FOOTER_H + PERF_BAND_H  # 2648px
 
     BG_COLOR = (11, 11, 11)          # #0b0b0b
     PERF_COLOR = (51, 51, 51)        # #333333
@@ -1053,11 +1050,40 @@ def generate_contact_sheets(entries, delivery_root, event_name, total_count) -> 
     PHOTO_MAX_H = PHOTO_AREA_H - PHOTO_PAD * 2
     HEADER_PAD_X = 32
 
+    # 日本語フォント候補（シート内の「全○枚」やイベント名が文字化けしないよう優先する）
+    _JP_FONT_CANDIDATES = [
+        # Windows標準の日本語フォント
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/YuGothB.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        # macOS標準の日本語フォント
+        "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        # Linux (Noto Sans CJK)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ]
+    _jp_font_cache = {}
+
     def _safe_font(sz: int):
-        try:
-            return load_font("", sz)
-        except Exception:
-            return ImageFont.load_default()
+        if sz in _jp_font_cache:
+            return _jp_font_cache[sz]
+        font_obj = None
+        for cand in _JP_FONT_CANDIDATES:
+            if os.path.exists(cand):
+                try:
+                    font_obj = ImageFont.truetype(cand, max(10, int(sz)))
+                    break
+                except Exception:
+                    continue
+        if font_obj is None:
+            try:
+                font_obj = load_font("", sz)
+            except Exception:
+                font_obj = ImageFont.load_default()
+        _jp_font_cache[sz] = font_obj
+        return font_obj
 
     def _measure_text(draw_obj: ImageDraw.ImageDraw, txt: str, font_obj):
         bbox = draw_obj.textbbox((0, 0), txt, font=font_obj)
@@ -1103,13 +1129,13 @@ def generate_contact_sheets(entries, delivery_root, event_name, total_count) -> 
         return ellipsis, font_obj
 
     def _draw_perf_band(draw_obj: ImageDraw.ImageDraw, band_top: int):
-        hole_w, hole_h, hole_r = 30, 20, 6
+        hole_w, hole_h, hole_r = 26, 16, 5
         y0 = band_top + (PERF_BAND_H - hole_h) // 2
         y1 = y0 + hole_h - 1
-        x = 28
+        x = 26
         while x + hole_w <= SHEET_W:
             draw_obj.rounded_rectangle([x, y0, x + hole_w - 1, y1], radius=hole_r, fill=PERF_COLOR)
-            x += 56
+            x += 52
 
     root_path = Path(delivery_root)
     total_pages = (len(entries) + PER_PAGE - 1) // PER_PAGE
@@ -1118,16 +1144,16 @@ def generate_contact_sheets(entries, delivery_root, event_name, total_count) -> 
 
     for page_idx in range(total_pages):
         page_entries = entries[page_idx * PER_PAGE:(page_idx + 1) * PER_PAGE]
-        sheet = Image.new("RGB", (SHEET_W, SHEET_H), BG_COLOR)
+        rows_used = (len(page_entries) + COLS - 1) // COLS
+        grid_top = HEADER_H + PERF_BAND_H
+        grid_bottom = HEADER_H + rows_used * STRIP_H - PERF_BAND_H
+        sheet_h = HEADER_H + rows_used * STRIP_H + FOOTER_H
+        sheet = Image.new("RGB", (SHEET_W, sheet_h), BG_COLOR)
         try:
             draw = ImageDraw.Draw(sheet)
 
-            # 上下パーフォレーション帯
-            _draw_perf_band(draw, 0)
-            _draw_perf_band(draw, SHEET_H - PERF_BAND_H)
-
             # ヘッダー（左: イベント名 / 右: 総枚数）
-            header_cy = PERF_BAND_H + HEADER_H // 2
+            header_cy = HEADER_H // 2
             f_total = _safe_font(28)
             total_w, _ = _measure_text(draw, total_str, f_total)
             _draw_anchored(draw, (SHEET_W - HEADER_PAD_X, header_cy), total_str, f_total, HEADER_SUB_COLOR, "rm")
@@ -1136,11 +1162,17 @@ def generate_contact_sheets(entries, delivery_root, event_name, total_count) -> 
             fitted_ev, f_ev = _fit_text(draw, ev_str, avail_ev_w, start_sz=46, min_sz=28, step=2)
             _draw_anchored(draw, (HEADER_PAD_X, header_cy), fitted_ev, f_ev, HEADER_MAIN_COLOR, "lm")
 
+            # 写真のある行だけをフィルムの帯として描く（各行の上下にパーフォレーション帯）
+            for r_idx in range(rows_used):
+                strip_top = HEADER_H + r_idx * STRIP_H
+                _draw_perf_band(draw, strip_top)
+                _draw_perf_band(draw, strip_top + PERF_BAND_H + CELL)
+
             # 各セルの写真サムネイルと下部アンバー色ファイル名ラベル
             for slot_idx, (img_path, out_fname) in enumerate(page_entries):
                 r_idx, c_idx = divmod(slot_idx, COLS)
                 cell_x = c_idx * CELL
-                cell_y = GRID_TOP + r_idx * CELL
+                cell_y = HEADER_H + r_idx * STRIP_H + PERF_BAND_H
 
                 try:
                     with Image.open(img_path) as raw_im:
@@ -1170,19 +1202,20 @@ def generate_contact_sheets(entries, delivery_root, event_name, total_count) -> 
                 lbl_cy = cell_y + PHOTO_AREA_H + (LABEL_H - 2) // 2
                 _draw_anchored(draw, (lbl_cx, lbl_cy), fitted_lbl, f_lbl, AMBER_COLOR, "mm")
 
-            # セル区切り線（全セルの右端・下端および外周上端・左端、幅2px）
-            draw.rectangle([0, GRID_TOP, SHEET_W - 1, GRID_TOP + 1], fill=GRID_LINE_COLOR)
-            for r_idx in range(ROWS):
-                y_edge = GRID_TOP + (r_idx + 1) * CELL - 2
+            # セル区切り線（写真のある行の範囲だけ、幅2px）
+            for r_idx in range(rows_used):
+                y0 = HEADER_H + r_idx * STRIP_H + PERF_BAND_H
+                draw.rectangle([0, y0, SHEET_W - 1, y0 + 1], fill=GRID_LINE_COLOR)
+                y_edge = y0 + CELL - 2
                 draw.rectangle([0, y_edge, SHEET_W - 1, y_edge + 1], fill=GRID_LINE_COLOR)
 
-            draw.rectangle([0, GRID_TOP, 1, GRID_BOTTOM - 1], fill=GRID_LINE_COLOR)
+            draw.rectangle([0, grid_top, 1, grid_bottom - 1], fill=GRID_LINE_COLOR)
             for c_idx in range(COLS):
                 x_edge = (c_idx + 1) * CELL - 2
-                draw.rectangle([x_edge, GRID_TOP, x_edge + 1, GRID_BOTTOM - 1], fill=GRID_LINE_COLOR)
+                draw.rectangle([x_edge, grid_top, x_edge + 1, grid_bottom - 1], fill=GRID_LINE_COLOR)
 
             # フッター（ページ番号 1 / 3 形式）
-            footer_cy = GRID_BOTTOM + FOOTER_H // 2
+            footer_cy = sheet_h - FOOTER_H // 2
             f_page = _safe_font(24)
             page_str = f"{page_idx + 1} / {total_pages}"
             _draw_anchored(draw, (SHEET_W // 2, footer_cy), page_str, f_page, HEADER_SUB_COLOR, "mm")
@@ -1285,13 +1318,13 @@ class PatternListItem(ctk.CTkFrame):
 
 
 # ==========================================
-# メインウィンドウ (v4.4.0)
+# メインウィンドウ (v4.4.1)
 # ==========================================
 
 class PhotoDeliveryApp(BaseWindowClass):
     def __init__(self):
         super().__init__()
-        self.title("Instant Delivery & SNS Studio  —  v4.4.0")
+        self.title("Instant Delivery & SNS Studio  —  v4.4.1")
 
         screen_w = max(800, int(self.winfo_screenwidth()))
         screen_h = max(600, int(self.winfo_screenheight()))
@@ -1346,7 +1379,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.4.0", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.4.1", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
