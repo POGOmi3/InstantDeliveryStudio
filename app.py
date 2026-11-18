@@ -117,6 +117,24 @@ def ui_font(size: int = 12, weight: str = "normal"):
     return ctk.CTkFont(family=FONT_FAMILY, size=size, weight=weight)
 
 
+_INVALID_FS_CHARS = str.maketrans({ch: "_" for ch in '<>:"/\\|?*'})
+_WIN_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def _sanitize_fs_name(name: str, fallback: str = "Output") -> str:
+    cleaned = "".join("_" if ord(c) < 32 else c for c in str(name)).translate(_INVALID_FS_CHARS)
+    cleaned = cleaned.strip().rstrip(".")
+    if not cleaned:
+        return fallback
+    if cleaned.split(".")[0].upper() in _WIN_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned
+
+
 def open_folder(path_str: str):
     """Windows / Mac / Linux すべてで指定フォルダを開くクロスプラットフォーム関数"""
     try:
@@ -320,7 +338,10 @@ class FontPickerDialog(ctk.CTkToplevel):
         self.preview_img_label.image = ctk_img
 
     def _browse_direct_file(self):
-        p = filedialog.askopenfilename(filetypes=[("Font Files", "*.ttf *.otf *.ttc"), ("All", "*.*")])
+        p = filedialog.askopenfilename(
+            parent=self,
+            filetypes=[("Font Files", "*.ttf *.otf *.ttc"), ("All", "*.*")]
+        )
         if p:
             self.selected_path = p
             self._confirm()
@@ -546,9 +567,14 @@ def extract_exif_metadata(img_path: str):
         exp = exif.get(piexif.ExifIFD.ExposureTime)
         if isinstance(exp, tuple) and len(exp) == 2 and exp[1] != 0 and exp[0] != 0:
             val = exp[0] / exp[1]
-            meta["shutter"] = f"1/{int(round(1.0 / val))}s" if val < 1.0 else f"{val:.1f}".rstrip("0").rstrip(".") + "s"
+            if val < 1.0 and round(1.0 / val) >= 2:
+                meta["shutter"] = f"1/{int(round(1.0 / val))}s"
+            else:
+                meta["shutter"] = f"{val:.1f}".rstrip("0").rstrip(".") + "s"
 
         iso = exif.get(piexif.ExifIFD.ISOSpeedRatings)
+        if isinstance(iso, (tuple, list)):
+            iso = iso[0] if iso else None
         if iso is not None:
             meta["iso"] = f"ISO {iso}"
     except Exception:
@@ -1059,13 +1085,13 @@ class PatternListItem(ctk.CTkFrame):
 
 
 # ==========================================
-# メインウィンドウ (v4.3 Thread-Safe & Read-Only Resilient Edition)
+# メインウィンドウ (v4.3.1 Thread-Safe & Read-Only Resilient Edition)
 # ==========================================
 
 class PhotoDeliveryApp(BaseWindowClass):
     def __init__(self):
         super().__init__()
-        self.title("Instant Delivery & SNS Studio  —  v4.3")
+        self.title("Instant Delivery & SNS Studio  —  v4.3.1")
 
         screen_w = max(800, int(self.winfo_screenwidth()))
         screen_h = max(600, int(self.winfo_screenheight()))
@@ -1093,6 +1119,8 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.sample_portrait = create_sample_dummy_image(is_portrait=True)
         self._cached_dual_sources = None
         self._cached_single_source = None
+        self._exif_cache = {}
+        self._orientation_fallback_cache = {}
         self._last_stage_size = (0, 0)
 
         self._build_ui()
@@ -1114,7 +1142,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.3", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.3.1", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
@@ -1374,7 +1402,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ctk.CTkLabel(bar_row1, text="編集スロット", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(2, 8))
 
         self.slot_selector = self._make_dropdown(
-            bar_row1, values=["Slot 1"], width=110, command=self._switch_wm_slot_view
+            bar_row1, values=["Slot 1"], width=185, command=self._switch_wm_slot_view
         )
         self.slot_selector.configure(height=24)
         self.slot_selector.set("Slot 1")
@@ -1957,6 +1985,14 @@ class PhotoDeliveryApp(BaseWindowClass):
             self._cached_dual_sources = None
             self.schedule_preview_update()
 
+    def _get_exif_cached(self, img_path: str):
+        cached = self._exif_cache.get(img_path)
+        if cached is not None:
+            return cached
+        meta = extract_exif_metadata(img_path)
+        self._exif_cache[img_path] = meta
+        return meta
+
     def _get_current_photo_source(self):
         if not self.image_files:
             im, meta = self.sample_landscape
@@ -1971,7 +2007,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         with Image.open(p) as raw_im:
             base_im = ImageOps.exif_transpose(raw_im).convert("RGB")
             base_im.thumbnail((1100, 1100), Image.Resampling.LANCZOS)
-        meta = extract_exif_metadata(p)
+        meta = self._get_exif_cached(p)
         name = Path(p).name
         self._cached_single_source = (self.single_preview_index, base_im, meta, name)
         return base_im, meta, name
@@ -1982,47 +2018,57 @@ class PhotoDeliveryApp(BaseWindowClass):
             p_im, p_meta = self.sample_portrait
             return l_im, l_meta, "Landscape Sample", p_im, p_meta, "Portrait Sample"
 
+        self.single_preview_index = max(0, min(self.single_preview_index, len(self.image_files) - 1))
+        if self._cached_dual_sources and self._cached_dual_sources[0] == self.single_preview_index:
+            return self._cached_dual_sources[1:]
+
         cur_im, cur_meta, cur_name = self._get_current_photo_source()
         if cur_im.width >= cur_im.height:
             land_im, land_meta, land_name = cur_im, cur_meta, cur_name
-            port_im, port_meta, port_name = None, None, None
-            for p in self.image_files:
-                try:
-                    with Image.open(p) as im:
-                        im_t = ImageOps.exif_transpose(im)
-                        if im_t.height > im_t.width:
-                            port_im = im_t.convert("RGB")
-                            port_im.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
-                            port_meta = extract_exif_metadata(p)
-                            port_name = Path(p).name
-                            break
-                except Exception:
-                    continue
+            if "portrait" not in self._orientation_fallback_cache:
+                found = (None, None, None)
+                for p in self.image_files:
+                    try:
+                        with Image.open(p) as im:
+                            im_t = ImageOps.exif_transpose(im)
+                            if im_t.height > im_t.width:
+                                p_im = im_t.convert("RGB")
+                                p_im.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+                                found = (p_im, self._get_exif_cached(p), Path(p).name)
+                                break
+                    except Exception:
+                        continue
+                self._orientation_fallback_cache["portrait"] = found
+            port_im, port_meta, port_name = self._orientation_fallback_cache["portrait"]
             if port_im is None:
                 port_im = make_simulated_opposite_orientation(land_im)
                 port_meta = land_meta
                 port_name = f"{land_name} (2:3 Crop)"
         else:
             port_im, port_meta, port_name = cur_im, cur_meta, cur_name
-            land_im, land_meta, land_name = None, None, None
-            for p in self.image_files:
-                try:
-                    with Image.open(p) as im:
-                        im_t = ImageOps.exif_transpose(im)
-                        if im_t.width >= im_t.height:
-                            land_im = im_t.convert("RGB")
-                            land_im.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
-                            land_meta = extract_exif_metadata(p)
-                            land_name = Path(p).name
-                            break
-                except Exception:
-                    continue
+            if "landscape" not in self._orientation_fallback_cache:
+                found = (None, None, None)
+                for p in self.image_files:
+                    try:
+                        with Image.open(p) as im:
+                            im_t = ImageOps.exif_transpose(im)
+                            if im_t.width >= im_t.height:
+                                l_im = im_t.convert("RGB")
+                                l_im.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+                                found = (l_im, self._get_exif_cached(p), Path(p).name)
+                                break
+                    except Exception:
+                        continue
+                self._orientation_fallback_cache["landscape"] = found
+            land_im, land_meta, land_name = self._orientation_fallback_cache["landscape"]
             if land_im is None:
                 land_im = make_simulated_opposite_orientation(port_im)
                 land_meta = port_meta
                 land_name = f"{port_name} (3:2 Crop)"
 
-        return land_im, land_meta, land_name, port_im, port_meta, port_name
+        result = (land_im, land_meta, land_name, port_im, port_meta, port_name)
+        self._cached_dual_sources = (self.single_preview_index, *result)
+        return result
 
     def _get_stage_scaling(self) -> float:
         """CTkFrameウィジェット側のDPI拡大率を優先取得し、論理ピクセル変換の失敗を防ぐ"""
@@ -2117,6 +2163,9 @@ class PhotoDeliveryApp(BaseWindowClass):
                     cell["frame"].configure(border_color=COLOR_BG, fg_color=COLOR_BG)
                     cell["title"].configure(text="", text_color=COLOR_TEXT_MUTED)
                     cell["img"].configure(image=None, text="")
+                    cell["img"].image = None
+                    for w in (cell["frame"], cell["title"], cell["img"]):
+                        w.bind("<Button-1>", lambda e: None)
 
         elif mode == "縦横向き比較":
             self.dual_stage.pack(fill="both", expand=True, padx=4, pady=4)
@@ -2213,6 +2262,8 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.single_preview_index = 0
         self._cached_dual_sources = None
         self._cached_single_source = None
+        self._exif_cache.clear()
+        self._orientation_fallback_cache.clear()
 
         parent_name = Path(collected[0]).parent.name
         self.drop_label.configure(text=f"{len(collected)} 枚読込済  ({parent_name})", text_color="#4ade80")
@@ -2227,7 +2278,7 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         counts = {}
         for img_p in self.image_files:
-            meta = extract_exif_metadata(img_p)
+            meta = self._get_exif_cached(img_p)
             cam = meta["camera"] or "EXIFカメラ名なし"
             counts[cam] = counts.get(cam, 0) + 1
 
@@ -2266,7 +2317,14 @@ class PhotoDeliveryApp(BaseWindowClass):
         return configs
 
     def _collect_caption_config(self):
-        rules = self.cap_replace_entry.get().replace(",", "\n")
+        raw_rules = self.cap_replace_entry.get().replace(",", "\n")
+        clean_rules = []
+        for r_line in raw_rules.splitlines():
+            if "=" in r_line:
+                k_part, v_part = r_line.split("=", 1)
+                if k_part.strip():
+                    clean_rules.append(f"{k_part.strip()}={v_part.strip()}")
+        rules = "\n".join(clean_rules)
         return {
             "show_camera": self.cap_cam_var.get(),
             "show_lens": self.cap_lens_var.get(),
@@ -2308,7 +2366,19 @@ class PhotoDeliveryApp(BaseWindowClass):
         wm_cfgs = self._collect_wm_configs()
         cap_cfg = self._collect_caption_config()
         sort_mode = self.sort_mode_cb.get()
-        event_base = self.event_name_entry.get().strip() or "Event"
+        event_base = _sanitize_fs_name(self.event_name_entry.get().strip(), "Event")
+
+        used_folders = set()
+        for pat in active_patterns:
+            base_folder = _sanitize_fs_name(pat.get("folder", ""), "Output")
+            cand_folder = base_folder
+            suffix_n = 2
+            while cand_folder.lower() in used_folders:
+                cand_folder = f"{base_folder}_{suffix_n}"
+                suffix_n += 1
+            used_folders.add(cand_folder.lower())
+            pat["folder"] = cand_folder
+
         make_zip = self.zip_var.get()
         sync_time = self.sync_time_var.get()
         try:
@@ -2317,6 +2387,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             jpeg_q = 95
         copyright_str = self.copyright_entry.get().strip()
         files_snapshot = list(self.image_files)
+        exif_snapshot = dict(self._exif_cache)
 
         cam_offsets = {}
         for cam, (m_e, s_e) in self.camera_offset_widgets.items():
@@ -2332,7 +2403,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             try:
                 items = []
                 for p in files_snapshot:
-                    meta = extract_exif_metadata(p)
+                    meta = exif_snapshot.get(p) or extract_exif_metadata(p)
                     cam = meta["camera"] or "EXIFカメラ名なし"
                     offset_sec = cam_offsets.get(cam, 0)
                     corr_dt = meta["datetime"] + timedelta(seconds=offset_sec)
@@ -2350,16 +2421,28 @@ class PhotoDeliveryApp(BaseWindowClass):
                 total_count = len(items)
                 digits = max(3, len(str(total_count)))
 
+                exported_filenames = []
+                used_filenames = set()
+                for idx, item in enumerate(items):
+                    if sort_mode.startswith("リネームしない"):
+                        stem_clean = _sanitize_fs_name(item["name"], f"image_{idx + 1}")
+                    else:
+                        stem_clean = f"{event_base}_{str(idx + 1).zfill(digits)}"
+                    cand_name = f"{stem_clean}.jpg"
+                    dup_n = 2
+                    while cand_name.lower() in used_filenames:
+                        cand_name = f"{stem_clean}_{dup_n}.jpg"
+                        dup_n += 1
+                    used_filenames.add(cand_name.lower())
+                    item["out_filename"] = cand_name
+                    exported_filenames.append(cand_name)
+
                 def process_one(idx_and_item):
                     idx, item = idx_and_item
                     p = item["path"]
                     meta = item["meta"]
                     corr_dt = item["corrected_dt"]
-
-                    if sort_mode.startswith("リネームしない"):
-                        base_filename = f"{item['name']}.jpg"
-                    else:
-                        base_filename = f"{event_base}_{str(idx + 1).zfill(digits)}.jpg"
+                    base_filename = item["out_filename"]
 
                     with Image.open(p) as raw_im:
                         icc = raw_im.info.get("icc_profile")
@@ -2401,8 +2484,10 @@ class PhotoDeliveryApp(BaseWindowClass):
                         folder_path = delivery_root / pat["folder"]
                         zip_path = delivery_root / f"{pat['folder']}.zip"
                         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                            for f in sorted(folder_path.iterdir()):
-                                zf.write(f, arcname=f.name)
+                            for fname in sorted(exported_filenames):
+                                f = folder_path / fname
+                                if f.is_file():
+                                    zf.write(f, arcname=fname)
 
                 elapsed = time.time() - start_t
                 done_msg = f"完了 ({total_count}枚 × {len(active_patterns)}パターン / {elapsed:.1f}s)"
@@ -2445,14 +2530,15 @@ class PhotoDeliveryApp(BaseWindowClass):
             "patterns": [it.data for it in self.pattern_items]
         }
 
-    def _save_state_to_file(self, filepath: Path):
+    def _save_state_to_file(self, filepath: Path) -> bool:
         try:
             filepath.parent.mkdir(parents=True, exist_ok=True)
             data = self._build_state_dict()
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
         except Exception:
-            pass
+            return False
 
     def _apply_state_dict(self, data: dict):
         if "event_name" in data:
@@ -2573,18 +2659,25 @@ class PhotoDeliveryApp(BaseWindowClass):
         p = filedialog.asksaveasfilename(defaultextension=".json", filetypes=[("JSON Preset", "*.json")])
         if not p:
             return
-        self._save_state_to_file(Path(p))
-        messagebox.showinfo("保存完了", "プリセットを保存しました。")
+        if self._save_state_to_file(Path(p)):
+            messagebox.showinfo("保存完了", "プリセットを保存しました。")
+        else:
+            messagebox.showerror("保存エラー", "プリセットの保存に失敗しました。保存先の権限や空き容量を確認してください。")
 
     def load_preset(self):
         p = filedialog.askopenfilename(filetypes=[("JSON Preset", "*.json")])
         if not p:
             return
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        self._apply_state_dict(data)
-        self.schedule_preview_update()
-        messagebox.showinfo("読込完了", "プリセットを読み込みました。")
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("プリセットの形式が不正です。")
+            self._apply_state_dict(data)
+            self.schedule_preview_update()
+            messagebox.showinfo("読込完了", "プリセットを読み込みました。")
+        except Exception as exc:
+            messagebox.showerror("読込エラー", f"プリセットの読み込みに失敗しました:\n{exc}")
 
 
 if __name__ == "__main__":
