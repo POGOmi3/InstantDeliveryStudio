@@ -1021,6 +1021,181 @@ def build_filtered_exif_bytes(meta: dict, exif_mode: str, corrected_dt: datetime
     except Exception:
         return None
 
+def generate_contact_sheets(entries, delivery_root, event_name, total_count) -> int:
+    if not entries:
+        return 0
+
+    COLS = 6
+    ROWS = 6
+    PER_PAGE = COLS * ROWS
+    CELL = 400
+    LABEL_H = 36
+    PHOTO_AREA_H = CELL - LABEL_H  # 364px
+    PERF_BAND_H = 44
+    HEADER_H = 100
+    FOOTER_H = 60
+
+    SHEET_W = COLS * CELL  # 2400px
+    GRID_TOP = PERF_BAND_H + HEADER_H  # 144px
+    GRID_H = ROWS * CELL  # 2400px
+    GRID_BOTTOM = GRID_TOP + GRID_H  # 2544px
+    SHEET_H = GRID_BOTTOM + FOOTER_H + PERF_BAND_H  # 2648px
+
+    BG_COLOR = (11, 11, 11)          # #0b0b0b
+    PERF_COLOR = (51, 51, 51)        # #333333
+    GRID_LINE_COLOR = (58, 58, 58)   # #3a3a3a
+    HEADER_MAIN_COLOR = (242, 242, 242)  # #f2f2f2
+    HEADER_SUB_COLOR = (204, 204, 204)   # #cccccc
+    AMBER_COLOR = (240, 161, 60)     # #f0a13c
+
+    PHOTO_PAD = 8
+    PHOTO_MAX_W = CELL - PHOTO_PAD * 2
+    PHOTO_MAX_H = PHOTO_AREA_H - PHOTO_PAD * 2
+    HEADER_PAD_X = 32
+
+    def _safe_font(sz: int):
+        try:
+            return load_font("", sz)
+        except Exception:
+            return ImageFont.load_default()
+
+    def _measure_text(draw_obj: ImageDraw.ImageDraw, txt: str, font_obj):
+        bbox = draw_obj.textbbox((0, 0), txt, font=font_obj)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+    def _draw_anchored(draw_obj: ImageDraw.ImageDraw, xy, txt: str, font_obj, fill, anchor: str):
+        try:
+            draw_obj.text(xy, txt, font=font_obj, fill=fill, anchor=anchor)
+        except ValueError:
+            tw, th = _measure_text(draw_obj, txt, font_obj)
+            x, y = xy
+            if anchor.startswith("r"):
+                x -= tw
+            elif anchor.startswith("m"):
+                x -= tw // 2
+            if anchor.endswith("m"):
+                y -= th // 2
+            elif anchor.endswith("b"):
+                y -= th
+            draw_obj.text((x, y), txt, font=font_obj, fill=fill)
+
+    def _fit_text(draw_obj: ImageDraw.ImageDraw, txt: str, max_w: int, start_sz: int, min_sz: int, step: int = 1):
+        font_obj = _safe_font(min_sz)
+        sz = start_sz
+        while sz >= min_sz:
+            cand_font = _safe_font(sz)
+            tw, _ = _measure_text(draw_obj, txt, cand_font)
+            if tw <= max_w:
+                return txt, cand_font
+            sz -= step
+        font_obj = _safe_font(min_sz)
+        tw, _ = _measure_text(draw_obj, txt, font_obj)
+        if tw <= max_w:
+            return txt, font_obj
+        ellipsis = "..."
+        trimmed = txt
+        while trimmed:
+            trimmed = trimmed[:-1]
+            cand = trimmed + ellipsis
+            cw, _ = _measure_text(draw_obj, cand, font_obj)
+            if cw <= max_w:
+                return cand, font_obj
+        return ellipsis, font_obj
+
+    def _draw_perf_band(draw_obj: ImageDraw.ImageDraw, band_top: int):
+        hole_w, hole_h, hole_r = 30, 20, 6
+        y0 = band_top + (PERF_BAND_H - hole_h) // 2
+        y1 = y0 + hole_h - 1
+        x = 28
+        while x + hole_w <= SHEET_W:
+            draw_obj.rounded_rectangle([x, y0, x + hole_w - 1, y1], radius=hole_r, fill=PERF_COLOR)
+            x += 56
+
+    root_path = Path(delivery_root)
+    total_pages = (len(entries) + PER_PAGE - 1) // PER_PAGE
+    ev_str = str(event_name or "")
+    total_str = f"全{total_count}枚"
+
+    for page_idx in range(total_pages):
+        page_entries = entries[page_idx * PER_PAGE:(page_idx + 1) * PER_PAGE]
+        sheet = Image.new("RGB", (SHEET_W, SHEET_H), BG_COLOR)
+        try:
+            draw = ImageDraw.Draw(sheet)
+
+            # 上下パーフォレーション帯
+            _draw_perf_band(draw, 0)
+            _draw_perf_band(draw, SHEET_H - PERF_BAND_H)
+
+            # ヘッダー（左: イベント名 / 右: 総枚数）
+            header_cy = PERF_BAND_H + HEADER_H // 2
+            f_total = _safe_font(28)
+            total_w, _ = _measure_text(draw, total_str, f_total)
+            _draw_anchored(draw, (SHEET_W - HEADER_PAD_X, header_cy), total_str, f_total, HEADER_SUB_COLOR, "rm")
+
+            avail_ev_w = max(120, SHEET_W - HEADER_PAD_X * 2 - total_w - 32)
+            fitted_ev, f_ev = _fit_text(draw, ev_str, avail_ev_w, start_sz=46, min_sz=28, step=2)
+            _draw_anchored(draw, (HEADER_PAD_X, header_cy), fitted_ev, f_ev, HEADER_MAIN_COLOR, "lm")
+
+            # 各セルの写真サムネイルと下部アンバー色ファイル名ラベル
+            for slot_idx, (img_path, out_fname) in enumerate(page_entries):
+                r_idx, c_idx = divmod(slot_idx, COLS)
+                cell_x = c_idx * CELL
+                cell_y = GRID_TOP + r_idx * CELL
+
+                try:
+                    with Image.open(img_path) as raw_im:
+                        try:
+                            raw_im.draft("RGB", (CELL, CELL))
+                        except Exception:
+                            pass
+                        transposed = ImageOps.exif_transpose(raw_im)
+                        try:
+                            work_im = transposed.convert("RGB")
+                        finally:
+                            if transposed is not raw_im:
+                                transposed.close()
+                    try:
+                        work_im.thumbnail((PHOTO_MAX_W, PHOTO_MAX_H), Image.Resampling.LANCZOS)
+                        px = cell_x + (CELL - work_im.width) // 2
+                        py = cell_y + (PHOTO_AREA_H - work_im.height) // 2
+                        sheet.paste(work_im, (px, py))
+                    finally:
+                        work_im.close()
+                except Exception:
+                    pass
+
+                label_txt = str(out_fname or "")
+                fitted_lbl, f_lbl = _fit_text(draw, label_txt, CELL - 16, start_sz=21, min_sz=12, step=1)
+                lbl_cx = cell_x + CELL // 2
+                lbl_cy = cell_y + PHOTO_AREA_H + (LABEL_H - 2) // 2
+                _draw_anchored(draw, (lbl_cx, lbl_cy), fitted_lbl, f_lbl, AMBER_COLOR, "mm")
+
+            # セル区切り線（全セルの右端・下端および外周上端・左端、幅2px）
+            draw.rectangle([0, GRID_TOP, SHEET_W - 1, GRID_TOP + 1], fill=GRID_LINE_COLOR)
+            for r_idx in range(ROWS):
+                y_edge = GRID_TOP + (r_idx + 1) * CELL - 2
+                draw.rectangle([0, y_edge, SHEET_W - 1, y_edge + 1], fill=GRID_LINE_COLOR)
+
+            draw.rectangle([0, GRID_TOP, 1, GRID_BOTTOM - 1], fill=GRID_LINE_COLOR)
+            for c_idx in range(COLS):
+                x_edge = (c_idx + 1) * CELL - 2
+                draw.rectangle([x_edge, GRID_TOP, x_edge + 1, GRID_BOTTOM - 1], fill=GRID_LINE_COLOR)
+
+            # フッター（ページ番号 1 / 3 形式）
+            footer_cy = GRID_BOTTOM + FOOTER_H // 2
+            f_page = _safe_font(24)
+            page_str = f"{page_idx + 1} / {total_pages}"
+            _draw_anchored(draw, (SHEET_W // 2, footer_cy), page_str, f_page, HEADER_SUB_COLOR, "mm")
+
+            out_sheet_path = root_path / f"_contact_{page_idx + 1:02d}.jpg"
+            sheet.save(str(out_sheet_path), "JPEG", quality=88)
+        finally:
+            sheet.close()
+
+    return total_pages
+
+
+
 
 # ==========================================
 # GUI コンポーネント: スリム・パターン行アイテム
@@ -1110,13 +1285,13 @@ class PatternListItem(ctk.CTkFrame):
 
 
 # ==========================================
-# メインウィンドウ (v4.3.3)
+# メインウィンドウ (v4.4.0)
 # ==========================================
 
 class PhotoDeliveryApp(BaseWindowClass):
     def __init__(self):
         super().__init__()
-        self.title("Instant Delivery & SNS Studio  —  v4.3.3")
+        self.title("Instant Delivery & SNS Studio  —  v4.4.0")
 
         screen_w = max(800, int(self.winfo_screenwidth()))
         screen_h = max(600, int(self.winfo_screenheight()))
@@ -1171,7 +1346,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.3.3", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.4.0", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
@@ -1284,34 +1459,40 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=(2, 0))
 
         r_opt = ctk.CTkFrame(sec1, fg_color="transparent")
-        r_opt.pack(fill="x", padx=10, pady=(0, 6))
+        r_opt.pack(fill="x", padx=8, pady=(0, 6))
 
-        ctk.CTkLabel(r_opt, text="イベント名", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(r_opt, text="イベント名", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 3))
         self.event_name_entry = ctk.CTkEntry(
-            r_opt, width=140, height=24, corner_radius=4,
+            r_opt, width=90, height=24, corner_radius=4,
             fg_color=COLOR_INPUT, border_width=1, border_color=COLOR_BORDER, font=ui_font(11)
         )
         self.event_name_entry.insert(0, f"{datetime.now().strftime('%Y%m%d')}_Event")
-        self.event_name_entry.pack(side="left", padx=(0, 10))
+        self.event_name_entry.pack(side="left", padx=(0, 4))
 
-        ctk.CTkLabel(r_opt, text="順序", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(r_opt, text="順序", height=22, font=ui_font(11), text_color=COLOR_TEXT_SUB).pack(side="left", padx=(0, 3))
         self.sort_mode_cb = self._make_dropdown(
-            r_opt, ["EXIF撮影日時順(ズレ補正対応)", "元のファイル名順", "リネームしない(元名維持)"], width=175
+            r_opt, ["EXIF撮影日時順(ズレ補正対応)", "元のファイル名順", "リネームしない(元名維持)"], width=168
         )
         self.sort_mode_cb.configure(height=24)
-        self.sort_mode_cb.pack(side="left", padx=(0, 10))
+        self.sort_mode_cb.pack(side="left", padx=(0, 4))
 
         self.zip_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
-            r_opt, text="ZIP化", variable=self.zip_var, width=58, height=22,
+            r_opt, text="ZIP化", variable=self.zip_var, width=48, height=22,
             checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11)
         ).pack(side="left", padx=2)
 
+        self.contact_sheet_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            r_opt, text="コンタクトシート", variable=self.contact_sheet_var, width=96, height=22,
+            checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11)
+        ).pack(side="left", padx=1)
+
         self.sync_time_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
-            r_opt, text="時刻同期", variable=self.sync_time_var, width=68, height=22,
+            r_opt, text="時刻同期", variable=self.sync_time_var, width=60, height=22,
             checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11)
-        ).pack(side="left", padx=2)
+        ).pack(side="left", padx=(2, 0))
 
         sec2 = ctk.CTkFrame(self.left_pane, fg_color=COLOR_SURFACE, corner_radius=6, border_width=1, border_color=COLOR_BORDER)
         sec2.pack(fill="x", pady=(0, 6))
@@ -2447,6 +2628,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         failed_list: list,
         cancelled: bool,
         zip_created: bool,
+        contact_info: str = "なし",
     ):
         if not delivery_root.exists():
             return None
@@ -2462,6 +2644,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             f"出力パターン: {', '.join(pattern_names)}",
             f"中止: {'あり' if cancelled else 'なし'}",
             f"ZIP作成: {'あり' if zip_created else 'なし'}",
+            f"コンタクトシート: {contact_info}",
             f"対象総数: {total_count} 枚",
             f"成功枚数: {len(succeeded_filenames)} 枚",
             f"失敗枚数: {len(failed_list)} 枚",
@@ -2496,6 +2679,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         cancelled: bool,
         elapsed: float,
         log_err: str = None,
+        sheet_err: str = None,
     ) -> str:
         parts = []
         if cancelled:
@@ -2519,6 +2703,10 @@ class PhotoDeliveryApp(BaseWindowClass):
         if log_err:
             parts.append("")
             parts.append(f"※ 警告: _export_log.txt の書き込みに失敗しました ({log_err})")
+
+        if sheet_err:
+            parts.append("")
+            parts.append(f"※ 警告: コンタクトシートの作成に失敗しました ({sheet_err})")
 
         return "\n".join(parts)
 
@@ -2574,6 +2762,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             pat["folder"] = cand_folder
 
         make_zip = self.zip_var.get()
+        make_contact = self.contact_sheet_var.get()
         sync_time = self.sync_time_var.get()
         try:
             jpeg_q = max(1, min(100, int(self.jpeg_q_entry.get() or 95)))
@@ -2809,17 +2998,31 @@ class PhotoDeliveryApp(BaseWindowClass):
                                     zf.write(f, arcname=fname)
                     zip_created = True
 
+                contact_info = "なし"
+                sheet_err = None
+                if make_contact and not cancelled and succeeded_records:
+                    self.after(0, lambda: self.status_label.configure(text="コンタクトシート作成中..."))
+                    try:
+                        entries = [(item["path"], item["out_filename"]) for _, item in succeeded_records]
+                        pages = generate_contact_sheets(entries, delivery_root, event_base, len(entries))
+                        contact_info = f"作成 ({pages}シート)"
+                    except Exception as exc:
+                        sheet_err = f"{type(exc).__name__}: {exc}"
+                        contact_info = "作成失敗"
+
                 end_dt = datetime.now()
                 elapsed = time.time() - start_t
                 log_err = self._write_export_log(
                     delivery_root, start_dt, end_dt, elapsed,
                     event_base, pattern_names, total_count,
-                    succeeded_filenames, failed_list, cancelled, zip_created
+                    succeeded_filenames, failed_list, cancelled, zip_created,
+                    contact_info=contact_info
                 )
 
                 acc_success, acc_failed, _ = export_summary
                 dialog_msg = self._build_export_dialog_message(
-                    acc_success, acc_failed, cancelled, elapsed, log_err
+                    acc_success, acc_failed, cancelled, elapsed, log_err,
+                    sheet_err=sheet_err
                 )
                 target_dir_str = str(delivery_root)
 
@@ -2836,7 +3039,7 @@ class PhotoDeliveryApp(BaseWindowClass):
                     done_msg = f"完了 ({acc_success}枚 × {len(active_patterns)}パターン / {elapsed:.1f}s)"
                     dlg_title = "書き出し完了"
 
-                has_warn = bool(acc_failed or log_err)
+                has_warn = bool(acc_failed or log_err or sheet_err)
 
                 def _on_export_finished_ui(
                     m=done_msg, d=target_dir_str, is_cancel=cancelled,
@@ -2880,6 +3083,7 @@ class PhotoDeliveryApp(BaseWindowClass):
             "event_name": self.event_name_entry.get(),
             "sort_mode": self.sort_mode_cb.get(),
             "zip": self.zip_var.get(),
+            "contact_sheet": self.contact_sheet_var.get(),
             "sync_time": self.sync_time_var.get(),
             "jpeg_q": self.jpeg_q_entry.get(),
             "copyright": self.copyright_entry.get(),
@@ -2909,6 +3113,8 @@ class PhotoDeliveryApp(BaseWindowClass):
             self.sort_mode_cb.set(data["sort_mode"])
         if "zip" in data:
             self.zip_var.set(bool(data["zip"]))
+        if "contact_sheet" in data:
+            self.contact_sheet_var.set(bool(data["contact_sheet"]))
         if "sync_time" in data:
             self.sync_time_var.set(bool(data["sync_time"]))
         if "jpeg_q" in data:
