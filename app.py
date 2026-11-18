@@ -445,7 +445,15 @@ class SliderEntryWidget(ctk.CTkFrame):
 # 画像処理・新ブラーエンジン・EXIF処理
 # ==========================================
 
+_font_cache = {}
+
+
 def load_font(font_path: str, size: int):
+    cache_key = (font_path, int(size))
+    cached = _font_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     candidates = []
     if font_path:
         if os.path.exists(font_path):
@@ -472,10 +480,14 @@ def load_font(font_path: str, size: int):
     for path in candidates:
         if os.path.exists(path):
             try:
-                return ImageFont.truetype(path, max(10, int(size)))
+                font_obj = ImageFont.truetype(path, max(10, int(size)))
+                _font_cache[cache_key] = font_obj
+                return font_obj
             except Exception:
                 continue
-    return ImageFont.load_default()
+    default_font = ImageFont.load_default()
+    _font_cache[cache_key] = default_font
+    return default_font
 
 
 def create_sample_dummy_image(is_portrait: bool = False):
@@ -653,6 +665,22 @@ def apply_drop_shadow(wm_rgba: Image.Image, strength: str):
     return canvas, pad
 
 
+_logo_image_cache = {}
+
+
+def _load_logo_image_cached(png_path: str) -> Image.Image:
+    cached = _logo_image_cache.get(png_path)
+    if cached is not None:
+        return cached
+    with Image.open(png_path) as raw_img:
+        wm_rgba = raw_img.convert("RGBA")
+    bbox = wm_rgba.getbbox()
+    if bbox:
+        wm_rgba = wm_rgba.crop(bbox)
+    _logo_image_cache[png_path] = wm_rgba
+    return wm_rgba
+
+
 def paste_watermarks_on_surface(surface_img: Image.Image, wm_configs: list, reference_long_edge: int, invert_for_light_bg: bool):
     out = surface_img.convert("RGBA")
     surf_w, surf_h = out.size
@@ -674,10 +702,7 @@ def paste_watermarks_on_surface(surface_img: Image.Image, wm_configs: list, refe
             if not png_path or not os.path.exists(png_path):
                 continue
             try:
-                wm_rgba = Image.open(png_path).convert("RGBA")
-                bbox = wm_rgba.getbbox()
-                if bbox:
-                    wm_rgba = wm_rgba.crop(bbox)
+                wm_rgba = _load_logo_image_cached(png_path)
                 if invert_for_light_bg:
                     r, g, b, a = wm_rgba.split()
                     dark = Image.new("L", wm_rgba.size, 30)
@@ -1085,13 +1110,13 @@ class PatternListItem(ctk.CTkFrame):
 
 
 # ==========================================
-# メインウィンドウ (v4.3.1 Thread-Safe & Read-Only Resilient Edition)
+# メインウィンドウ (v4.3.2)
 # ==========================================
 
 class PhotoDeliveryApp(BaseWindowClass):
     def __init__(self):
         super().__init__()
-        self.title("Instant Delivery & SNS Studio  —  v4.3.1")
+        self.title("Instant Delivery & SNS Studio  —  v4.3.2")
 
         screen_w = max(800, int(self.winfo_screenwidth()))
         screen_h = max(600, int(self.winfo_screenheight()))
@@ -1124,6 +1149,8 @@ class PhotoDeliveryApp(BaseWindowClass):
         self._last_stage_size = (0, 0)
 
         self._build_ui()
+        self.bind("<Left>", self._on_arrow_key)
+        self.bind("<Right>", self._on_arrow_key)
 
         if not self._restore_autosave_if_exists():
             self._load_default_patterns()
@@ -1142,7 +1169,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         ).pack(side="left", padx=16)
 
         ctk.CTkLabel(
-            top_bar, text="v4.3.1", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
+            top_bar, text="v4.3.2", height=24, font=ui_font(11), text_color=COLOR_TEXT_MUTED
         ).pack(side="left")
 
         self.pro_mode_var = ctk.BooleanVar(value=True)
@@ -1178,6 +1205,43 @@ class PhotoDeliveryApp(BaseWindowClass):
 
         self._build_left_pane()
         self._build_right_preview_pane()
+        self._register_drop_recursive(self)
+
+    def _on_arrow_key(self, event):
+        try:
+            focused = self.focus_get()
+        except Exception:
+            focused = None
+
+        if focused is not None:
+            if isinstance(focused, (tk.Entry, tk.Text, ctk.CTkEntry, ctk.CTkTextbox, ctk.CTkComboBox)):
+                return
+            try:
+                w_class = focused.winfo_class()
+            except Exception:
+                w_class = ""
+            if "Entry" in w_class or "Text" in w_class or w_class in ("Spinbox", "TSpinbox", "TCombobox"):
+                return
+
+        if event.keysym == "Left":
+            self._prev_photo()
+        elif event.keysym == "Right":
+            self._next_photo()
+
+    def _register_drop_recursive(self, widget):
+        if not DND_AVAILABLE or widget is None:
+            return
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_drop_files)
+        except Exception:
+            pass
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            children = []
+        for child in children:
+            self._register_drop_recursive(child)
 
     def _make_dropdown(self, parent, values, width=115, command=None):
         return ctk.CTkOptionMenu(
@@ -1235,7 +1299,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.sort_mode_cb.configure(height=24)
         self.sort_mode_cb.pack(side="left", padx=(0, 10))
 
-        self.zip_var = ctk.BooleanVar(value=True)
+        self.zip_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
             r_opt, text="ZIP化", variable=self.zip_var, width=58, height=22,
             checkbox_width=15, checkbox_height=15, corner_radius=3, font=ui_font(11)
@@ -2227,6 +2291,8 @@ class PhotoDeliveryApp(BaseWindowClass):
             self.single_img_lbl.configure(image=ctk_s)
             self.single_img_lbl.image = ctk_s
 
+        self._register_drop_recursive(self.preview_stage)
+
     # --- ファイル読込とカメラ機種スキャン ---
     def _on_drop_files(self, event):
         raw_paths = self.tk.splitlist(event.data)
@@ -2270,6 +2336,7 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.status_label.configure(text=f"読込完了: {len(collected)}枚")
         self._scan_cameras_in_files()
         self.schedule_preview_update()
+        self._register_drop_recursive(self.cam_list_frame)
 
     def _scan_cameras_in_files(self):
         for w in self.cam_list_frame.winfo_children():
@@ -2364,6 +2431,14 @@ class PhotoDeliveryApp(BaseWindowClass):
         self.run_btn.configure(state="disabled", text="書き出し中...")
         self.progress_bar.set(0)
         wm_cfgs = self._collect_wm_configs()
+        for cfg in wm_cfgs:
+            if cfg.get("enabled", False) and cfg.get("mode") == "PNG":
+                png_path = cfg.get("path", "")
+                if png_path and os.path.exists(png_path):
+                    try:
+                        _load_logo_image_cached(png_path)
+                    except Exception:
+                        pass
         cap_cfg = self._collect_caption_config()
         sort_mode = self.sort_mode_cb.get()
         event_base = _sanitize_fs_name(self.event_name_entry.get().strip(), "Event")
